@@ -2,10 +2,16 @@ from core.action_engine import (
     generate_actions
 )
 
-actions = generate_actions(
 
-    "Create a python hello world file"
+def main():
+    actions = generate_actions(
 
-)
+        "Create a python hello world file"
 
-print(actions)
+    )
+
+    print(actions)
+
+
+if __name__ == "__main__":
+    main()

@@ -2,12 +2,18 @@ from core.live_agent_runtime import (
     run_live_agent
 )
 
-result = run_live_agent(
 
-    "code",
+def main():
+    result = run_live_agent(
 
-    "Create a file and calculate using python"
+        "code",
 
-)
+        "Create a file and calculate using python"
 
-print(result)
+    )
+
+    print(result)
+
+
+if __name__ == "__main__":
+    main()

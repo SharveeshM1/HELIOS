@@ -2,12 +2,18 @@ from core.orchestrator import (
     Orchestrator
 )
 
-orchestrator = Orchestrator()
 
-result = orchestrator.execute(
+def main():
+    orchestrator = Orchestrator()
 
-    "Build and optimize an AI SaaS platform with autonomous workflows"
+    result = orchestrator.execute(
 
-)
+        "Build and optimize an AI SaaS platform with autonomous workflows"
 
-print(result) 
+    )
+
+    print(result)
+
+
+if __name__ == "__main__":
+    main()

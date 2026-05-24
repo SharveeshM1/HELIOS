@@ -5,15 +5,21 @@ from memory.system_memory import (
     get_fact
 )
 
-store_fact(
 
-    "model_name",
+def main():
+    store_fact(
 
-    "qwen2.5:3b"
-)
+        "model_name",
 
-result = get_fact(
-    "model_name"
-)
+        "qwen2.5:3b"
+    )
 
-print(result)
+    result = get_fact(
+        "model_name"
+    )
+
+    print(result)
+
+
+if __name__ == "__main__":
+    main()

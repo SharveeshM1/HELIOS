@@ -2,10 +2,16 @@ from core.action_executor import (
     execute_actions
 )
 
-result = execute_actions(
 
-    "Create a file named ai.txt"
+def main():
+    result = execute_actions(
 
-)
+        "Create a file named ai.txt"
 
-print(result) 
+    )
+
+    print(result)
+
+
+if __name__ == "__main__":
+    main()

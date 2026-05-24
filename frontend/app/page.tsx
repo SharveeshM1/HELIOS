@@ -507,13 +507,6 @@ const workflowRuns = [
   { step: "Review", detail: "Summarize outcome and next actions", state: "Waiting" },
 ];
 
-const missionActions = [
-  "Draft launch plan",
-  "Inspect memory",
-  "Review code risk",
-  "Map sources",
-];
-
 function formatFileSize(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
@@ -674,13 +667,6 @@ export default function Home() {
           meta: step.objective ?? "Waiting for the next plan.",
         }))
       : planNodes;
-  const missionText = input.trim() || "Upgrade HELIOS with futuristic control surfaces.";
-  const missionBlueprint = [
-    { label: "Objective", value: missionText },
-    { label: "Lead", value: `${selectedAgent.name} / ${activeModuleConfig.title}` },
-    { label: "Risk", value: attachments.length > 0 ? "Source-aware" : runtimeState === "online" ? "Low" : "Needs runtime" },
-    { label: "Next", value: isGenerating ? "Await current run" : "Send mission" },
-  ];
   const agentRadar = agents.map((agent) => {
     const isSelected = agent.name === selectedAgent.name;
     const state = isGenerating && isSelected ? "working" : isSelected ? "focused" : runtimeState === "offline" ? "standby" : "ready";
@@ -691,18 +677,6 @@ export default function Home() {
       orbit: isSelected ? "Primary" : state === "ready" ? "Linked" : "Idle",
     };
   });
-  const memoryTimeline = [
-    { label: "Now", title: activeModuleConfig.title, detail: `${selectedAgent.name} is active in ${activeTab}.` },
-    { label: "Chat", title: `${messages.length} messages`, detail: messages.at(-1)?.text || "Session is ready." },
-    { label: "Sources", title: `${sourceStats?.total_sources ?? indexedSources.length} indexed`, detail: attachments.length > 0 ? `${attachments.length} pending attachment(s).` : "Project source scope is stable." },
-    { label: "Run", title: lastRunAt, detail: lastTrace.length > 0 ? `${lastTrace.length} trace events captured.` : "No live trace yet." },
-  ];
-  const systemPulse = [
-    { label: "Backend", value: runtimeState === "online" ? "Stable" : runtimeState === "checking" ? "Checking" : "Watch", tone: runtimeState === "online" ? "green" : "amber" },
-    { label: "Model", value: health?.ai?.model_available ? "Ready" : "Attention", tone: health?.ai?.model_available ? "teal" : "amber" },
-    { label: "Memory", value: `${memoryUsage}%`, tone: memoryUsage > 85 ? "amber" : "blue" },
-    { label: "Sources", value: String(sourceStats?.total_sources ?? indexedSources.length), tone: "violet" },
-  ];
   const runLedgerStatusLabel =
     runLedgerStatus === "live"
       ? "Live"
@@ -728,6 +702,26 @@ export default function Home() {
     const stamp = `${String((new Date().getHours() + 23) % 24).padStart(2, "0")}:${String((new Date().getMinutes() + index) % 60).padStart(2, "0")}`;
     return { height: Math.min(height, 118), anomaly, stamp };
   });
+
+  const stopRealtimeVoice = () => {
+    voiceDataChannelRef.current?.close();
+    voiceDataChannelRef.current = null;
+
+    peerConnectionRef.current?.getSenders().forEach((sender) => sender.track?.stop());
+    peerConnectionRef.current?.close();
+    peerConnectionRef.current = null;
+
+    voiceStreamRef.current?.getTracks().forEach((track) => track.stop());
+    voiceStreamRef.current = null;
+
+    if (voiceAudioRef.current) {
+      voiceAudioRef.current.srcObject = null;
+      voiceAudioRef.current.remove();
+      voiceAudioRef.current = null;
+    }
+
+    setVoiceState("idle");
+  };
 
   const intelligenceCosts = [
     { label: "Context ops", value: `${(18.4 + (runtimeTick % 6) / 10).toFixed(1)}M`, tone: "teal" },
@@ -1126,26 +1120,6 @@ export default function Home() {
     const cleanText = text.trim();
     if (!cleanText) return;
     setVoiceTurns((current) => [...current.slice(-7), { id: idRef.current++, role, text: cleanText }]);
-  };
-
-  const stopRealtimeVoice = () => {
-    voiceDataChannelRef.current?.close();
-    voiceDataChannelRef.current = null;
-
-    peerConnectionRef.current?.getSenders().forEach((sender) => sender.track?.stop());
-    peerConnectionRef.current?.close();
-    peerConnectionRef.current = null;
-
-    voiceStreamRef.current?.getTracks().forEach((track) => track.stop());
-    voiceStreamRef.current = null;
-
-    if (voiceAudioRef.current) {
-      voiceAudioRef.current.srcObject = null;
-      voiceAudioRef.current.remove();
-      voiceAudioRef.current = null;
-    }
-
-    setVoiceState("idle");
   };
 
   const startRealtimeVoice = async () => {

@@ -2,28 +2,34 @@ from core.agent_coordinator import (
     AgentCoordinator
 )
 
-coordinator = AgentCoordinator()
 
-result = coordinator.execute_task(
+def main():
+    coordinator = AgentCoordinator()
 
-    "code",
+    result = coordinator.execute_task(
 
-    "create_file",
+        "code",
 
-    "memory/team_test.txt"
-)
+        "create_file",
 
-print(result)
+        "memory/team_test.txt"
+    )
 
-delegation = coordinator.delegate_task(
+    print(result)
 
-    "research",
+    delegation = coordinator.delegate_task(
 
-    "code",
+        "research",
 
-    "Build autonomous infrastructure"
-)
+        "code",
 
-print(delegation)
+        "Build autonomous infrastructure"
+    )
 
-print(coordinator.get_history())
+    print(delegation)
+
+    print(coordinator.get_history())
+
+
+if __name__ == "__main__":
+    main()

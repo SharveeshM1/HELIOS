@@ -2,37 +2,43 @@ from core.task_graph import (
     TaskGraph
 )
 
-graph = TaskGraph()
 
-graph.add_task(
+def main():
+    graph = TaskGraph()
 
-    "code",
+    graph.add_task(
 
-    "create_file",
+        "code",
 
-    "memory/graph1.txt"
-)
+        "create_file",
 
-graph.add_task(
+        "memory/graph1.txt"
+    )
 
-    "code",
+    graph.add_task(
 
-    "create_file",
+        "code",
 
-    "memory/graph2.txt"
-)
+        "create_file",
 
-graph.add_task(
+        "memory/graph2.txt"
+    )
 
-    "code",
+    graph.add_task(
 
-    "create_file",
+        "code",
 
-    "memory/final.txt",
+        "create_file",
 
-    depends_on="create_file"
-)
+        "memory/final.txt",
 
-results = graph.run()
+        depends_on="create_file"
+    )
 
-print(results) 
+    results = graph.run()
+
+    print(results)
+
+
+if __name__ == "__main__":
+    main()

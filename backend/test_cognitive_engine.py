@@ -2,12 +2,18 @@ from core.cognitive_engine import (
     CognitiveEngine
 )
 
-engine = CognitiveEngine()
 
-result = engine.execute(
+def main():
+    engine = CognitiveEngine()
 
-    "Build scalable autonomous AI infrastructure"
+    result = engine.execute(
 
-)
+        "Build scalable autonomous AI infrastructure"
 
-print(result)
+    )
+
+    print(result)
+
+
+if __name__ == "__main__":
+    main()

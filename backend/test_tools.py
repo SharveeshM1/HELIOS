@@ -8,45 +8,46 @@ from core.tool_executor import (
 # CODE AGENT CREATES FILE
 # =========================================
 
-result = execute_agent_tool(
+def main():
+    result = execute_agent_tool(
 
-    "code",
+        "code",
 
-    "create_file",
+        "create_file",
 
-    "memory/agent_test.txt",
+        "memory/agent_test.txt",
 
-    "HELIOS AGENT EXECUTION ONLINE"
-)
+        "HELIOS AGENT EXECUTION ONLINE"
+    )
 
-print(result)
+    print(result)
 
-# =========================================
-# CODE AGENT READS FILE
-# =========================================
+    # =========================================
+    # CODE AGENT READS FILE
+    # =========================================
 
-content = execute_agent_tool(
+    content = execute_agent_tool(
 
-    "code",
+        "code",
 
-    "read_file",
+        "read_file",
 
-    "memory/agent_test.txt"
-)
+        "memory/agent_test.txt"
+    )
 
-print(content)
+    print(content)
 
-# =========================================
-# CODE AGENT EXECUTES PYTHON
-# =========================================
+    # =========================================
+    # CODE AGENT EXECUTES PYTHON
+    # =========================================
 
-python_result = execute_agent_tool(
+    python_result = execute_agent_tool(
 
-    "code",
+        "code",
 
-    "execute_python",
+        "execute_python",
 
-    """
+        """
 
 x = 10
 y = 22
@@ -54,6 +55,10 @@ y = 22
 result = x * y
 
 """
-)
+    )
 
-print(python_result)
+    print(python_result)
+
+
+if __name__ == "__main__":
+    main()

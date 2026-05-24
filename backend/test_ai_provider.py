@@ -2,10 +2,16 @@ from api.ai_provider import (
     generate_ai_response
 )
 
-response = generate_ai_response(
 
-    "Explain AI agents in one paragraph"
+def main():
+    response = generate_ai_response(
 
-)
+        "Explain AI agents in one paragraph"
 
-print(response)
+    )
+
+    print(response)
+
+
+if __name__ == "__main__":
+    main()

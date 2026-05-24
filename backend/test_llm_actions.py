@@ -2,12 +2,18 @@ from core.llm_action_engine import (
     generate_actions
 )
 
-result = generate_actions(
 
-    "code",
+def main():
+    result = generate_actions(
 
-    "Create a Python file for a calculator"
+        "code",
 
-)
+        "Create a Python file for a calculator"
 
-print(result)
+    )
+
+    print(result)
+
+
+if __name__ == "__main__":
+    main()

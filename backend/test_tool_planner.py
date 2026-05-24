@@ -2,12 +2,18 @@ from core.tool_planner import (
     ToolPlanner
 )
 
-planner = ToolPlanner()
 
-result = planner.build_plan(
+def main():
+    planner = ToolPlanner()
 
-    "Build scalable AI infrastructure with autonomous deployment"
+    result = planner.build_plan(
 
-)
+        "Build scalable AI infrastructure with autonomous deployment"
 
-print(result) 
+    )
+
+    print(result)
+
+
+if __name__ == "__main__":
+    main()
