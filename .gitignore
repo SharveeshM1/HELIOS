@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.codex-backups/
+
+# Local environments
+.env
+.env.*
+!.env.example
+venv/
+backend/venv/
+
+# Frontend
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+
+# Runtime artifacts
+*.log
+*.mp3
+*.wav
+*.webm
+temp_audio/
+backend/temp_audio/
+compilation_results.txt
+
+# OS/editor
+.DS_Store

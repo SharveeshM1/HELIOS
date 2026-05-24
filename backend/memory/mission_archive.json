@@ -1,0 +1,69 @@
+[
+  {
+    "id": "HELIOS-MISSION-000",
+    "title": "Future OS Upgrade",
+    "objective": "Add a controlled futuristic mission layer without changing the existing UI foundation.",
+    "mode": "Strategic Build",
+    "priority": "High",
+    "phase": 0,
+    "created": "Standby",
+    "steps": [
+      {
+        "phase": "Observe",
+        "agent": "Orion",
+        "objective": "Clarify mission intent and operating constraints.",
+        "status": "active",
+        "risk": "low"
+      },
+      {
+        "phase": "Plan",
+        "agent": "Nova",
+        "objective": "Map knowledge, memory, and required context.",
+        "status": "queued",
+        "risk": "low"
+      },
+      {
+        "phase": "Execute",
+        "agent": "Vega",
+        "objective": "Build scoped artifacts and verify behavior.",
+        "status": "queued",
+        "risk": "medium"
+      },
+      {
+        "phase": "Reflect",
+        "agent": "Orion",
+        "objective": "Record outcome, risks, and next best action.",
+        "status": "queued",
+        "risk": "low"
+      }
+    ],
+    "memory_timeline": [
+      {
+        "kind": "intent",
+        "label": "Mission Intent",
+        "value": "Add a controlled futuristic mission layer without changing the existing UI foundation.",
+        "time": "Standby"
+      },
+      {
+        "kind": "checkpoint",
+        "label": "Active Checkpoint",
+        "value": "Clarify mission intent and operating constraints.",
+        "time": "2026-05-21 01:15"
+      },
+      {
+        "kind": "decision",
+        "label": "Council Signal",
+        "value": "Council review has not been run yet. Confidence: pending.",
+        "time": "2026-05-21 01:15"
+      },
+      {
+        "kind": "progress",
+        "label": "Progress Memory",
+        "value": "0 of 4 mission checkpoints completed.",
+        "time": "2026-05-21 01:15"
+      }
+    ],
+    "archived_at": "2026-05-21 20:54",
+    "archive_key": "HELIOS-MISSION-000-205420"
+  }
+]
