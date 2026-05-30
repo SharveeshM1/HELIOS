@@ -1,4 +1,6 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# HELIOS Frontend
+
+This is the Next.js command dashboard for HELIOS. It talks to the FastAPI backend for health checks, source indexing, module-scoped chat, realtime voice session creation, and run ledger events.
 
 ## Getting Started
 
@@ -6,36 +8,37 @@ First, run the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Runtime Surfaces
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- `app/page.tsx` renders the AI operating workspace, module switcher, run ledger, source upload, voice controls, and chat composer.
+- `NEXT_PUBLIC_HELIOS_API_URL` points browser calls at the FastAPI backend.
+- `NEXT_PUBLIC_HELIOS_WS_URL` can override the run ledger WebSocket URL when deployed behind a gateway.
 
 ## Environment Variables
 
 - `NEXT_PUBLIC_HELIOS_API_URL` (defaults to `http://localhost:8000`)
-- `NEXT_PUBLIC_HELIOS_WS_URL` (optional, full WebSocket URL for live run ledger events; defaults to `${NEXT_PUBLIC_HELIOS_API_URL}/events` with `ws://` or `wss://`)
+- `NEXT_PUBLIC_HELIOS_WS_URL` (optional, full WebSocket URL for live run ledger events)
 
-## Learn More
+## Quality Checks
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run lint
+npm run build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Backend Pairing
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Start the backend first:
 
-## Deploy on Vercel
+```bash
+cd ../backend
+venv/bin/uvicorn backend.server:app --reload
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The dashboard will show degraded/offline runtime state until `/health` is reachable.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
