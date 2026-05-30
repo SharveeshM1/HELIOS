@@ -1,5 +1,8 @@
 import logging
 import json
+import time
+import uuid
+import asyncio
 
 from fastapi import (
     FastAPI,
@@ -45,6 +48,13 @@ from core.source_library import (
     source_stats,
     upsert_source
 )
+from core.runtime_config import (
+    ALLOWED_MODULES,
+    APP_VERSION,
+    ENVIRONMENT,
+    MAX_ATTACHMENT_CHARS,
+    MAX_CHAT_MESSAGE_CHARS
+)
 
 # =========================================
 # LOAD ENV
@@ -70,6 +80,9 @@ logging.basicConfig(
 logger = logging.getLogger(
     "helios-backend"
 )
+
+STARTED_AT = time.time()
+REQUEST_COUNT = 0
 
 
 def parse_csv_env(name, fallback):
@@ -182,7 +195,10 @@ cognitive_engine = CognitiveEngine()
 
 class ChatRequest(BaseModel):
 
-    message: str
+    message: str = Field(
+        min_length=1,
+        max_length=MAX_CHAT_MESSAGE_CHARS
+    )
     module: str = "dashboard"
     agent: str = "HELIOS"
     attachments: list[dict] = Field(
@@ -201,10 +217,16 @@ class ChatResponse(BaseModel):
 
 class SourceRequest(BaseModel):
 
-    name: str
+    name: str = Field(
+        min_length=1,
+        max_length=180
+    )
     type: str = "FILE"
     size: str = "unknown"
-    content: str = ""
+    content: str = Field(
+        default="",
+        max_length=MAX_ATTACHMENT_CHARS
+    )
     scope: str = "project"
 
 
@@ -212,6 +234,13 @@ class SourceResponse(BaseModel):
 
     source: dict
     stats: dict
+
+
+class SourceSearchResponse(BaseModel):
+
+    sources: list[dict]
+    stats: dict
+    query: str
 
 
 MAX_SOURCE_CONTENT_CHARS = int(
@@ -230,6 +259,44 @@ OPENAI_REALTIME_VOICE = os.getenv(
     "OPENAI_REALTIME_VOICE",
     "marin"
 )
+
+
+@app.middleware("http")
+
+async def request_observability(
+    request: Request,
+    call_next
+):
+
+    global REQUEST_COUNT
+
+    REQUEST_COUNT += 1
+    request_id = request.headers.get(
+        "x-request-id",
+        str(
+            uuid.uuid4()
+        )
+    )
+    started = time.perf_counter()
+
+    response = await call_next(
+        request
+    )
+
+    duration_ms = round(
+        (
+            time.perf_counter()
+            - started
+        ) * 1000,
+        2
+    )
+
+    response.headers["x-request-id"] = request_id
+    response.headers["x-helios-duration-ms"] = str(
+        duration_ms
+    )
+
+    return response
 
 # =========================================
 # CLEAN RESPONSE
@@ -325,18 +392,33 @@ def generate_cognitive_response(
     attachments = attachments or []
 
     saved_attachments = []
+    safe_attachments = []
 
     for item in attachments:
 
-        if item.get("content"):
+        clean_item = {
+            **item,
+            "content": str(
+                item.get(
+                    "content",
+                    ""
+                )
+            )[:MAX_ATTACHMENT_CHARS]
+        }
+
+        safe_attachments.append(
+            clean_item
+        )
+
+        if clean_item.get("content"):
 
             saved_attachments.append(
                 upsert_source(
-                    item.get("name", "source"),
-                    item.get("type", "FILE"),
-                    item.get("size", "unknown"),
-                    item.get("content", ""),
-                    item.get("scope", "chat")
+                    clean_item.get("name", "source"),
+                    clean_item.get("type", "FILE"),
+                    clean_item.get("size", "unknown"),
+                    clean_item.get("content", ""),
+                    clean_item.get("scope", "chat")
                 )
             )
 
@@ -350,7 +432,7 @@ def generate_cognitive_response(
 - {item.get('name', 'source')} ({item.get('type', 'file')}, {item.get('size', 'unknown size')})
 {item.get('content', '')}
 """
-        for item in attachments
+        for item in safe_attachments
     )
 
     source_context = "\n".join(
@@ -524,6 +606,9 @@ async def root():
         "name":
         "HELIOS Backend",
 
+        "version":
+        APP_VERSION,
+
         "status":
         "online",
 
@@ -546,6 +631,22 @@ async def health():
         "backend":
         "online",
 
+        "version":
+        APP_VERSION,
+
+        "environment":
+        ENVIRONMENT,
+
+        "uptime_seconds":
+        round(
+            time.time()
+            - STARTED_AT,
+            2
+        ),
+
+        "request_count":
+        REQUEST_COUNT,
+
         "ai":
         ai_status,
 
@@ -565,6 +666,33 @@ async def sources():
         "sources": load_sources(),
         "stats": source_stats()
     }
+
+
+@app.get("/sources/search", response_model=SourceSearchResponse)
+
+async def source_search(
+    q: str = "",
+    limit: int = 5,
+    scope: str | None = None
+):
+
+    safe_limit = max(
+        1,
+        min(
+            limit,
+            25
+        )
+    )
+
+    return SourceSearchResponse(
+        sources=search_sources(
+            q,
+            limit=safe_limit,
+            scope=scope
+        ),
+        stats=source_stats(),
+        query=q
+    )
 
 
 @app.post("/sources", response_model=SourceResponse)
@@ -603,6 +731,16 @@ async def save_source(
 async def chat(
     request: ChatRequest
 ):
+
+    request.module = request.module.strip().lower()
+    request.agent = request.agent.strip() or "HELIOS"
+
+    if request.module not in ALLOWED_MODULES:
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported HELIOS module: {request.module}"
+        )
 
     if (
         request.module == "dashboard"
@@ -843,3 +981,68 @@ async def websocket_endpoint(
         except Exception:
 
             pass
+
+
+@app.websocket("/events")
+
+async def event_stream(
+    websocket: WebSocket
+):
+
+    await websocket.accept()
+
+    last_event_id = None
+
+    try:
+
+        await websocket.send_json(
+            {
+                "id": str(
+                    uuid.uuid4()
+                ),
+                "label": "Run ledger connected",
+                "actor": "HELIOS Backend",
+                "module": "system",
+                "status": "live",
+                "detail": "Realtime event stream is online.",
+                "timestamp": time.strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+            }
+        )
+
+        while True:
+
+            latest = shared_bus.latest_message()
+
+            if latest and latest.get("id") != last_event_id:
+
+                last_event_id = latest.get("id")
+
+                await websocket.send_json(
+                    {
+                        "id": latest.get("id"),
+                        "label": "Agent bus event",
+                        "actor": latest.get("sender"),
+                        "module": latest.get("receiver"),
+                        "status": latest.get("status"),
+                        "detail": latest.get("content"),
+                        "timestamp": latest.get("timestamp")
+                    }
+                )
+
+            await asyncio.sleep(
+                1.5
+            )
+
+    except WebSocketDisconnect:
+
+        logger.info(
+            "Event stream disconnected."
+        )
+
+    except Exception:
+
+        logger.exception(
+            "Event stream failure."
+        )
