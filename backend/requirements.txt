@@ -5,6 +5,10 @@ google-generativeai
 python-dotenv
 openai
 ollama
+fastapi
+uvicorn
+httpx
 SpeechRecognition
 pyttsx3
 streamlit-mic-recorder
+pytest
