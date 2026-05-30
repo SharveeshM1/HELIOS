@@ -1,25 +1,25 @@
 import json
 import os
+import re
 import tempfile
 import threading
 
 from datetime import datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Dict
 from typing import List
 
+from core.runtime_config import MEMORY_DIR
+from core.runtime_config import ensure_runtime_dirs
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-MEMORY_DIR = BASE_DIR / "memory"
 SOURCE_FILE = MEMORY_DIR / "source_library.json"
 MAX_SOURCE_CHARS = 12000
 MAX_SOURCES = 200
 
 source_lock = threading.Lock()
 
-MEMORY_DIR.mkdir(
-    exist_ok=True
-)
+ensure_runtime_dirs()
 
 
 def _atomic_write(
@@ -109,7 +109,18 @@ def upsert_source(
     clean_name = str(name).strip() or "source"
     clean_type = str(source_type).strip() or "FILE"
     clean_content = str(content or "")[:MAX_SOURCE_CHARS]
-    source_id = f"{clean_name}:{clean_type}:{len(clean_content)}"
+    clean_scope = str(scope or "project").strip() or "project"
+    fingerprint = sha256(
+        "|".join(
+            [
+                clean_name.lower(),
+                clean_type.lower(),
+                clean_scope.lower(),
+                clean_content
+            ]
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    source_id = f"src_{fingerprint}"
 
     sources = load_sources()
     entry = {
@@ -117,9 +128,10 @@ def upsert_source(
         "name": clean_name,
         "type": clean_type,
         "size": str(size or "unknown"),
-        "scope": str(scope or "project"),
+        "scope": clean_scope,
         "content": clean_content,
         "status": "Indexed" if clean_content else "Pending",
+        "content_chars": len(clean_content),
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
 
@@ -146,24 +158,38 @@ def upsert_source(
 
 def search_sources(
     query: str,
-    limit: int = 5
+    limit: int = 5,
+    scope: str | None = None
 ) -> List[Dict]:
 
-    terms = [
+    terms = {
         term
-        for term in str(query).lower().split()
-        if len(term) > 2
-    ]
+        for term in re.findall(
+            r"[a-z0-9_]{3,}",
+            str(query).lower()
+        )
+    }
+
+    clean_scope = str(scope).strip().lower() if scope else None
 
     sources = load_sources()
     ranked = []
 
     for source in sources:
 
+        if (
+            clean_scope
+            and
+            str(source.get("scope", "")).lower() != clean_scope
+        ):
+
+            continue
+
         haystack = " ".join(
             [
                 str(source.get("name", "")),
                 str(source.get("type", "")),
+                str(source.get("scope", "")),
                 str(source.get("content", ""))
             ]
         ).lower()
@@ -175,21 +201,44 @@ def search_sources(
 
         if score or not terms:
 
+            match_terms = [
+                term
+                for term in terms
+                if term in haystack
+            ]
+
+            source_copy = {
+                key: value
+                for key, value in source.items()
+                if key != "content"
+            }
+
+            content = str(
+                source.get("content", "")
+            )
+
+            source_copy["snippet"] = content[:280]
+            source_copy["match_terms"] = match_terms
+
             ranked.append(
                 (
                     score,
-                    source
+                    source.get("updated_at", ""),
+                    source_copy
                 )
             )
 
     ranked.sort(
-        key=lambda item: item[0],
+        key=lambda item: (
+            item[0],
+            item[1]
+        ),
         reverse=True
     )
 
     return [
         source
-        for _, source in ranked[:limit]
+        for _, __, source in ranked[:limit]
     ]
 
 
@@ -206,5 +255,17 @@ def source_stats() -> Dict:
         "total_sources": len(sources),
         "indexed_sources": len(indexed),
         "pending_sources": len(sources) - len(indexed),
+        "total_content_chars": sum(
+            len(
+                str(source.get("content", ""))
+            )
+            for source in sources
+        ),
+        "scopes": sorted(
+            {
+                str(source.get("scope", "project"))
+                for source in sources
+            }
+        ),
         "source_file": str(SOURCE_FILE)
     }
