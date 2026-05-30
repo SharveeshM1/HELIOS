@@ -1,12 +1,17 @@
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 
 from datetime import datetime
+from pathlib import Path
 from typing import Dict
 from typing import List
+
+from core.runtime_config import MEMORY_DIR as RUNTIME_MEMORY_DIR
+from core.runtime_config import ensure_runtime_dirs
 
 # =========================================
 # LOGGER
@@ -20,14 +25,20 @@ logger = logging.getLogger(
 # MEMORY CONFIG
 # =========================================
 
-MEMORY_DIR = "memory"
+MEMORY_DIR = str(
+    RUNTIME_MEMORY_DIR
+)
 
 MEMORY_FILE = (
-    f"{MEMORY_DIR}/chat_history.json"
+    str(
+        Path(MEMORY_DIR) / "chat_history.json"
+    )
 )
 
 BACKUP_FILE = (
-    f"{MEMORY_DIR}/chat_history.backup.json"
+    str(
+        Path(MEMORY_DIR) / "chat_history.backup.json"
+    )
 )
 
 MAX_MEMORY_ITEMS = 100
@@ -42,10 +53,7 @@ memory_lock = threading.Lock()
 # ENSURE DIRECTORY
 # =========================================
 
-os.makedirs(
-    MEMORY_DIR,
-    exist_ok=True
-)
+ensure_runtime_dirs()
 
 # =========================================
 # SAFE JSON WRITE
@@ -190,7 +198,20 @@ def load_memory() -> List[Dict]:
                         "Recovered from backup memory."
                     )
 
-                    return backup_data
+                    if isinstance(
+                        backup_data,
+                        list
+                    ):
+
+                        return [
+                            item
+                            for item in backup_data
+                            if validate_memory_item(
+                                item
+                            )
+                        ]
+
+                    return []
 
                 except Exception:
 
@@ -373,7 +394,15 @@ def search_memory(
 
         return []
 
-    results = []
+    query_terms = {
+        term
+        for term in re.findall(
+            r"[a-z0-9_]{3,}",
+            query
+        )
+    }
+
+    ranked = []
 
     for item in chat_history:
 
@@ -385,15 +414,41 @@ def search_memory(
             item.get("assistant", "")
         ).lower()
 
-        if (
-            query in user_text
-            or
-            query in assistant_text
-        ):
+        combined = f"{user_text} {assistant_text}"
 
-            results.append(item)
+        exact_match = query in combined
 
-    return results
+        score = sum(
+            combined.count(term)
+            for term in query_terms
+        )
+
+        if exact_match:
+
+            score += 5
+
+        if score:
+
+            ranked.append(
+                (
+                    score,
+                    item.get("timestamp", ""),
+                    item
+                )
+            )
+
+    ranked.sort(
+        key=lambda result: (
+            result[0],
+            result[1]
+        ),
+        reverse=True
+    )
+
+    return [
+        item
+        for _, __, item in ranked
+    ]
 
 # =========================================
 # RECENT MEMORY
