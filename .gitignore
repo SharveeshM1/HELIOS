@@ -19,6 +19,8 @@ node_modules/
 out/
 build/
 *.tsbuildinfo
+frontend/test-results/
+frontend/playwright-report/
 
 # Runtime artifacts
 *.log
