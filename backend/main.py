@@ -214,6 +214,10 @@ from api.web_search import (
     search_web
 )
 
+from api.ai_provider import (
+    generate_response
+)
+
 from api.voice_api import (
     transcribe_audio
 )
@@ -655,6 +659,22 @@ def safe_background_task(
     ).start()
 
 
+def persist_project_memory_async(
+    user_input,
+    assistant_output
+):
+
+    summary = summarize_project(
+        user_input,
+        assistant_output
+    )
+
+    add_project_memory(
+        user_input,
+        summary
+    )
+
+
 def add_execution_event(
     label,
     message,
@@ -912,7 +932,7 @@ elif selected == "Code Intelligence":
 
 elif selected == "Voice AI":
 
-    render_realtime_voice(
+    render_voice_cockpit(
         mic_recorder is not None,
         transcript=st.session_state.get(
             "helios_last_transcript",
@@ -1294,10 +1314,6 @@ if selected in {
 
     render_source_intelligence_panel()
 
-if selected == "Voice AI":
-
-    st.stop()
-
 # =========================================================
 # VOICE INPUT
 # =========================================================
@@ -1309,10 +1325,11 @@ audio = None
 if selected == "Voice AI" and mic_recorder is not None:
 
     audio = mic_recorder(
-        start_prompt="🎤 Speak",
-        stop_prompt="⏹ Stop",
+        start_prompt="Start voice",
+        stop_prompt="Send voice",
         just_once=True,
-        key="helios_voice_input"
+        key="helios_voice_input",
+        use_container_width=True
     )
 
 elif selected == "Voice AI":
@@ -1516,6 +1533,99 @@ def get_simple_greeting_reply(text):
         return "Hey, I'm here."
 
     return None
+
+
+def should_use_web_search(text, route):
+
+    if route:
+
+        return route.get("module") == "Research Center"
+
+    normalized = str(text or "").lower()
+
+    search_terms = [
+        "search",
+        "web",
+        "internet",
+        "latest",
+        "current",
+        "today",
+        "news",
+        "source",
+        "cite",
+        "lookup",
+        "look up"
+    ]
+
+    return any(
+        term in normalized
+        for term in search_terms
+    )
+
+
+def should_use_fast_chat(text, mode, module, route, files):
+
+    if route or files:
+
+        return False
+
+    normalized = str(text or "").lower()
+
+    heavy_terms = [
+        "build",
+        "fix",
+        "debug",
+        "implement",
+        "analyze this file",
+        "analyze these files",
+        "research",
+        "search",
+        "latest",
+        "current",
+        "cite",
+        "source",
+        "workflow",
+        "plan",
+        "mission",
+        "autonomous",
+        "execute",
+        "deploy",
+        "rollback",
+        "terminal",
+        "shell command"
+    ]
+
+    if any(term in normalized for term in heavy_terms):
+
+        return False
+
+    return mode in {
+        "Think",
+        "Chat",
+        "Build"
+    }
+
+
+def generate_fast_chat_response(text, directive):
+
+    prompt = f"""
+You are HELIOS.
+
+Answer the user directly and conversationally.
+Keep it concise unless the user asks for depth.
+For code requests, provide the code first, then a brief note.
+Do not add internal routing summaries, fake metrics, or reasoning labels.
+
+Directive:
+{directive}
+
+User:
+{text}
+"""
+
+    return generate_response(
+        prompt
+    )
 
 chat_input_kwargs = {}
 
@@ -1802,30 +1912,46 @@ if final_input:
             mode=reactor_mode
         )
 
+    fast_chat_run = should_use_fast_chat(
+        final_input,
+        reactor_mode,
+        active_module,
+        slash_route,
+        chat_files
+    )
+
     try:
 
         # =================================
         # WEB SEARCH
         # =================================
 
-        update_stage(
-            "Using Tool",
-            "Checking search routes, uploaded files, and active context."
-        )
+        web_results = ""
 
-        try:
+        if should_use_web_search(
+            final_input,
+            slash_route
+        ):
 
-            web_results = search_web(
-                engine_input
+            update_stage(
+                "Using Tool",
+                "Checking search routes, uploaded files, and active context."
             )
 
-        except Exception:
+            try:
 
-            logger.exception(
-                "Web search failed"
-            )
+                web_results = search_web(
+                    final_input,
+                    max_results=3
+                )
 
-            web_results = ""
+            except Exception:
+
+                logger.exception(
+                    "Web search failed"
+                )
+
+                web_results = ""
 
         # =================================
         # AGENT
@@ -1871,41 +1997,43 @@ if final_input:
         # TASK
         # =================================
 
-        try:
+        if not fast_chat_run:
 
-            update_stage(
-                "Thinking",
-                "Creating a visible task record and preparing execution memory."
-            )
+            try:
 
-            task = create_task(
-                title="AI Request",
-                description=final_input,
-                agent=auto_agent
-            )
+                update_stage(
+                    "Thinking",
+                    "Creating a visible task record and preparing execution memory."
+                )
 
-            st.session_state["tasks"].append(
-                task
-            )
+                task = create_task(
+                    title="AI Request",
+                    description=final_input,
+                    agent=auto_agent
+                )
 
-            add_execution_event(
-                "TASK",
-                "Created task record for the current request.",
-                status="OK",
-                actor=auto_agent,
-                module=active_module
-            )
+                st.session_state["tasks"].append(
+                    task
+                )
 
-            safe_background_task(
-                execute_task,
-                task
-            )
+                add_execution_event(
+                    "TASK",
+                    "Created task record for the current request.",
+                    status="OK",
+                    actor=auto_agent,
+                    module=active_module
+                )
 
-        except Exception:
+                safe_background_task(
+                    execute_task,
+                    task
+                )
 
-            logger.exception(
-                "Task creation failed"
-            )
+            except Exception:
+
+                logger.exception(
+                    "Task creation failed"
+                )
 
         # =================================
         # COGNITIVE ENGINE
@@ -1913,14 +2041,40 @@ if final_input:
 
         update_stage(
             "Writing",
-            "Running the cognitive engine and composing the HELIOS response."
+            (
+                "Composing a fast HELIOS response."
+                if fast_chat_run
+                else "Running the cognitive engine and composing the HELIOS response."
+            )
         )
 
-        engine_output = cognitive_engine.execute(
-            engine_input,
-            web_results=web_results,
-            file_content=file_content
-        )
+        if fast_chat_run:
+
+            engine_output = generate_fast_chat_response(
+                final_input,
+                reactor_directive
+            )
+
+            cognitive_engine.last_trace = [
+                {
+                    "stage": "fast_chat",
+                    "actor": "HELIOS",
+                    "payload": {
+                        "status": "completed"
+                    },
+                    "timestamp": time.strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                }
+            ]
+
+        else:
+
+            engine_output = cognitive_engine.execute(
+                engine_input,
+                web_results=web_results,
+                file_content=file_content
+            )
 
         # =================================
         # SAFE OUTPUT
@@ -2039,15 +2193,10 @@ if final_input:
 
         try:
 
-            summary = summarize_project(
+            safe_background_task(
+                persist_project_memory_async,
                 final_input,
                 full_response
-            )
-
-            safe_background_task(
-                add_project_memory,
-                final_input,
-                summary
             )
 
         except Exception:

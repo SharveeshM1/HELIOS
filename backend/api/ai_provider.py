@@ -23,6 +23,23 @@ load_dotenv(
 
 logger = logging.getLogger("helios")
 
+
+def _int_env(name, default):
+
+    try:
+
+        return int(
+            os.getenv(
+                name,
+                str(default)
+            )
+        )
+
+    except (TypeError, ValueError):
+
+        return default
+
+
 MODEL_NAME = os.getenv(
     "HELIOS_OLLAMA_MODEL",
     os.getenv(
@@ -33,6 +50,10 @@ MODEL_NAME = os.getenv(
 GEMINI_MODEL_NAME = os.getenv(
     "GEMINI_MODEL_NAME",
     "gemini-2.0-flash"
+)
+OLLAMA_NUM_PREDICT = _int_env(
+    "HELIOS_OLLAMA_NUM_PREDICT",
+    360
 )
 
 SYSTEM_PROMPT = """
@@ -120,7 +141,10 @@ def _generate_with_ollama(prompt):
                     "content": str(prompt)
                 }
 
-            ]
+            ],
+            options={
+                "num_predict": OLLAMA_NUM_PREDICT
+            }
         )
 
         message = getattr(

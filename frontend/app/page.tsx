@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, DragEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, CSSProperties, DragEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type ModuleKey =
   | "dashboard"
@@ -105,6 +105,11 @@ type HealthStatus = {
     indexed_sources?: number;
     pending_sources?: number;
   };
+  missions?: {
+    total_events?: number;
+    active_events?: number;
+    agents?: AgentActivityMap;
+  };
 };
 
 type ChatResult = {
@@ -121,6 +126,120 @@ type SourcesResult = {
     total_sources?: number;
     indexed_sources?: number;
     pending_sources?: number;
+  };
+};
+
+type MissionEvent = {
+  id: string;
+  stage: "Created" | "Assigned" | "Executed" | "Reviewed" | "Archived" | string;
+  title: string;
+  agent?: string;
+  module?: string;
+  status?: string;
+  detail?: string;
+  artifact?: MissionArtifact;
+  timestamp?: string;
+};
+
+type AgentActivity = {
+  state?: string;
+  module?: string;
+  last_event?: string | null;
+  updated_at?: string;
+};
+
+type AgentActivityMap = Record<string, AgentActivity>;
+
+type MissionEventsResult = {
+  events?: MissionEvent[];
+  missions?: MissionSummary[];
+  stats?: {
+    total_events?: number;
+    active_events?: number;
+  };
+  agents?: AgentActivityMap;
+};
+
+type MissionSummary = {
+  id: string;
+  title: string;
+  agent?: string;
+  module?: ModuleKey | string;
+  status?: string;
+  stage?: string;
+  event_count?: number;
+  updated_at?: string;
+};
+
+type MissionArtifact = {
+  kind?: string;
+  summary?: string;
+  evidence?: Array<{
+    name?: string;
+    scope?: string;
+    snippet?: string;
+    match_terms?: string[];
+  }>;
+  steps?: string[];
+  checks?: string[];
+  assignments?: Array<{
+    agent?: string;
+    objective?: string;
+    priority?: number;
+  }>;
+  target_files?: string[];
+  file_signals?: Array<{
+    path?: string;
+    extension?: string;
+    matched_terms?: string[];
+    line_count?: number;
+    snippet?: string;
+  }>;
+  sources?: KnowledgeSource[];
+  signals?: Record<string, number>;
+  coverage?: Record<string, unknown>;
+  target?: string;
+};
+
+type MissionCreateResult = {
+  mission?: {
+    id?: string;
+    title?: string;
+    agent?: string;
+    module?: string;
+    status?: string;
+  };
+  events?: MissionEvent[];
+  stats?: {
+    total_events?: number;
+    active_events?: number;
+  };
+  agents?: AgentActivityMap;
+};
+
+type MissionAdvanceResult = {
+  mission?: MissionSummary;
+  event?: MissionEvent;
+  missions?: MissionSummary[];
+  stats?: {
+    total_events?: number;
+    active_events?: number;
+  };
+  agents?: AgentActivityMap;
+};
+
+type MissionRunResult = MissionAdvanceResult & {
+  artifact?: MissionArtifact;
+  task?: {
+    id?: string;
+    title?: string;
+    agent?: string;
+    status?: string;
+    progress?: number;
+    logs?: Array<{
+      timestamp?: string;
+      message?: string;
+    }>;
   };
 };
 
@@ -451,13 +570,21 @@ const agents = [
   },
 ];
 
-const quickActions = ["New chat", "Upload source", "Open memory", "Export thread"];
+const quickActions = [
+  "Create Mission",
+  "Launch Research",
+  "Activate Swarm",
+  "Inspect Memory",
+  "Open Voice Room",
+  "Upload source",
+  "Export thread",
+];
 
 const initialMessages: Message[] = [
   {
     id: 1,
     role: "assistant",
-    text: "HELIOS is online. Choose a module and I will keep the workspace scoped to that mode.",
+    text: "HELIOS is online. Define the mission.",
   },
 ];
 
@@ -583,6 +710,11 @@ export default function Home() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
+  const [missionOpen, setMissionOpen] = useState(false);
+  const [missionTitle, setMissionTitle] = useState("");
+  const [missionModule, setMissionModule] = useState<ModuleKey>("planning");
+  const [missionAgent, setMissionAgent] = useState("Orion");
+  const [isCreatingMission, setIsCreatingMission] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [deployOpen, setDeployOpen] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
@@ -594,6 +726,13 @@ export default function Home() {
   const [lastRunAt, setLastRunAt] = useState<string>("No runs yet");
   const [runLedger, setRunLedger] = useState<RunLedgerEvent[]>([]);
   const [runLedgerStatus, setRunLedgerStatus] = useState<RunLedgerStatus>("connecting");
+  const [missionEvents, setMissionEvents] = useState<MissionEvent[]>([]);
+  const [missions, setMissions] = useState<MissionSummary[]>([]);
+  const [activeMissionId, setActiveMissionId] = useState<string | null>(null);
+  const [advancingMissionStage, setAdvancingMissionStage] = useState("");
+  const [missionArtifact, setMissionArtifact] = useState<MissionArtifact | null>(null);
+  const [missionTask, setMissionTask] = useState<MissionRunResult["task"] | null>(null);
+  const [agentActivity, setAgentActivity] = useState<AgentActivityMap>({});
   const [indexedSources, setIndexedSources] = useState<KnowledgeSource[]>([]);
   const idRef = useRef(10);
   const generationRef = useRef<number | null>(null);
@@ -686,6 +825,76 @@ export default function Home() {
           ? "Error"
           : "Offline";
   const runLedgerEntries = runLedger.slice(0, 6);
+  const intelligenceStatus = isGenerating
+    ? attachments.length > 0
+      ? "Synthesizing"
+      : activeModule === "research"
+        ? "Searching"
+        : activeModule === "workflow" || activeModule === "loop"
+          ? "Executing"
+          : "Thinking"
+    : lastTrace.length > 0
+      ? "Reviewing"
+      : runtimeState === "online"
+        ? "Idle"
+        : "Checking";
+  const missionStageFallback = ["Created", "Assigned", "Executed", "Reviewed", "Archived"];
+  const missionTimelineItems =
+    missionEvents.length > 0
+      ? missionEvents.slice(-5).reverse()
+      : missionStageFallback.map((stage, index) => ({
+          id: `fallback-${stage}`,
+          stage,
+          title: index === 0 ? activeModuleConfig.title : activeModuleConfig.timeline[index - 1] ?? "Awaiting run",
+          agent: index < 2 ? selectedAgent.name : "HELIOS",
+          module: activeModule,
+          status: index < 2 ? "active" : "queued",
+        }));
+  const sources = useMemo(
+    () => [
+      ...indexedSources,
+      ...attachments.map((file) => ({ ...file, status: file.status ?? "Pending" })),
+    ],
+    [attachments, indexedSources],
+  );
+  const activeMission = missions.find((mission) => mission.id === activeMissionId) ?? missions[0];
+  const latestMission = missionEvents.at(-1);
+  const latestArtifact = missionArtifact ?? latestMission?.artifact ?? null;
+  const researchArtifact =
+    latestArtifact?.kind === "research"
+      ? latestArtifact
+      : missionEvents
+          .slice()
+          .reverse()
+          .find((event) => event.artifact?.kind === "research")
+          ?.artifact ?? null;
+  const researchEvidence =
+    researchArtifact?.evidence && researchArtifact.evidence.length > 0
+      ? researchArtifact.evidence
+      : sources.slice(0, 5).map((source) => ({
+          name: source.name,
+          scope: "scope" in source ? source.scope : "session",
+          snippet: source.content ?? source.status ?? "Indexed source signal.",
+          match_terms: [],
+        }));
+  const artifactHighlights = [
+    ...(latestArtifact?.target_files ?? []).slice(0, 4).map((path) => ({
+      label: "File",
+      value: path,
+    })),
+    ...(latestArtifact?.steps ?? []).slice(0, 4).map((step) => ({
+      label: "Step",
+      value: step,
+    })),
+    ...(latestArtifact?.checks ?? []).slice(0, 4).map((check) => ({
+      label: "Check",
+      value: check,
+    })),
+    ...(latestArtifact?.assignments ?? []).slice(0, 4).map((assignment) => ({
+      label: assignment.agent ?? "Agent",
+      value: assignment.objective ?? "Assigned mission step",
+    })),
+  ].slice(0, 4);
 
   const orchestrationFlow = [
     { agent: "Input", state: "Queued", detail: `${attachments.length} sources / ${messages.length} turns`, tone: "blue" },
@@ -737,14 +946,6 @@ export default function Home() {
     { actor: "Lyra", status: "synthesis ready", detail: "Can convert this run into memory, plan, or spoken briefing.", risk: "ok" },
   ];
 
-  const sources = useMemo(
-    () => [
-      ...indexedSources,
-      ...attachments.map((file) => ({ ...file, status: file.status ?? "Pending" })),
-    ],
-    [attachments, indexedSources],
-  );
-
   useEffect(() => {
     let active = true;
 
@@ -763,6 +964,7 @@ export default function Home() {
         if (!active) return;
 
         setHealth(data);
+        setAgentActivity(data.missions?.agents ?? {});
         setLastTrace((current) => (current.length > 0 ? current : data.cognitive_engine?.trace ?? []));
         setLastPlan((current) => (current.length > 0 ? current : data.cognitive_engine?.plan ?? []));
         setRuntimeState(data.ai?.model_available ? "online" : "degraded");
@@ -790,16 +992,53 @@ export default function Home() {
       }
     };
 
+    const loadMissionEvents = async () => {
+      try {
+        const result = await fetchWithTimeout(`${API_BASE_URL}/missions/events?limit=40`, {
+          cache: "no-store",
+        });
+
+        if (!result.ok) return;
+
+        const data = (await result.json()) as MissionEventsResult;
+
+        if (!active) return;
+
+        setMissionEvents(data.events ?? []);
+        setMissions(data.missions ?? []);
+        setActiveMissionId((current) => current ?? data.missions?.[0]?.id ?? null);
+        setAgentActivity(data.agents ?? {});
+      } catch {
+        return;
+      }
+    };
+
     void loadHealth();
     void loadSources();
+    void loadMissionEvents();
     const timer = window.setInterval(loadHealth, 10000);
     const sourceTimer = window.setInterval(loadSources, 15000);
+    const missionTimer = window.setInterval(loadMissionEvents, 12000);
 
     return () => {
       active = false;
       window.clearInterval(timer);
       window.clearInterval(sourceTimer);
+      window.clearInterval(missionTimer);
     };
+  }, []);
+
+  useEffect(() => {
+    const handleShortcut = (event: globalThis.KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setCommandOpen((open) => !open);
+      }
+    };
+
+    window.addEventListener("keydown", handleShortcut);
+
+    return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
 
   useEffect(() => {
@@ -993,21 +1232,152 @@ export default function Home() {
   };
 
   const runQuickAction = (action: string) => {
-    if (action === "New chat") {
+    if (action === "Create Mission") {
       stopGeneration();
       setMessages(initialMessages);
       setInput("");
       setAttachments([]);
+      setMissionTitle("");
+      setMissionModule(activeModule);
+      setMissionAgent(selectedAgent.name);
+      setMissionOpen(true);
     }
 
+    if (action === "Launch Research") switchModule("research");
+    if (action === "Activate Swarm") switchModule("swarm");
+    if (action === "Inspect Memory") setMemoryOpen(true);
+    if (action === "Open Voice Room") switchModule("voice");
     if (action === "Upload source") {
       switchModule("knowledge");
       fileInputRef.current?.click();
     }
 
-    if (action === "Open memory") setMemoryOpen(true);
     if (action === "Export thread") exportThread();
     setCommandOpen(false);
+  };
+
+  const createMission = async (title = missionTitle, module = missionModule, agent = missionAgent) => {
+    const cleanTitle = title.trim();
+    if (!cleanTitle || isCreatingMission) return;
+
+    setIsCreatingMission(true);
+
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/missions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: cleanTitle,
+          module,
+          agent,
+          detail: "Created from the premium HELIOS mission composer.",
+        }),
+      });
+
+      if (!result.ok) throw new Error(`Mission returned ${result.status}`);
+
+      const data = (await result.json()) as MissionCreateResult;
+
+      setMissionEvents((current) => [...current, ...(data.events ?? [])].slice(-80));
+      setAgentActivity(data.agents ?? {});
+      if (data.mission?.id) {
+        const summary = {
+          id: data.mission.id,
+          title: data.mission.title ?? cleanTitle,
+          agent: data.mission.agent,
+          module: data.mission.module,
+          status: data.mission.status,
+          stage: "Assigned",
+          event_count: 2,
+        };
+
+        setMissions((current) => [summary, ...current.filter((mission) => mission.id !== summary.id)].slice(0, 12));
+        setActiveMissionId(data.mission.id);
+      }
+      setMissionOpen(false);
+      setMissionTitle("");
+      switchModule(module);
+      setActiveAgent(agent);
+      setInput(cleanTitle);
+    } catch {
+      setRuntimeState("degraded");
+    } finally {
+      setIsCreatingMission(false);
+    }
+  };
+
+  const launchMissionPreset = (label: string, module: ModuleKey, agent: string) => {
+    setMissionTitle(label);
+    setMissionModule(module);
+    setMissionAgent(agent);
+    setMissionOpen(true);
+  };
+
+  const advanceMission = async (stage: string) => {
+    if (!activeMission || advancingMissionStage) return;
+
+    setAdvancingMissionStage(stage);
+
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/missions/${activeMission.id}/advance`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          stage,
+          detail: `Mission advanced to ${stage} from HELIOS command field.`,
+        }),
+      });
+
+      if (!result.ok) throw new Error(`Mission advance returned ${result.status}`);
+
+      const data = (await result.json()) as MissionAdvanceResult;
+
+      if (data.event) {
+        setMissionEvents((current) => [...current, data.event as MissionEvent].slice(-80));
+      }
+
+      setMissions(data.missions ?? []);
+      setAgentActivity(data.agents ?? {});
+      setActiveMissionId(data.mission?.id ?? activeMission.id);
+    } catch {
+      setRuntimeState("degraded");
+    } finally {
+      setAdvancingMissionStage("");
+    }
+  };
+
+  const runMissionWorkflow = async () => {
+    if (!activeMission || advancingMissionStage) return;
+
+    setAdvancingMissionStage("Run");
+
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/missions/${activeMission.id}/run`, {
+        method: "POST",
+      }, REQUEST_TIMEOUT_MS * 2);
+
+      if (!result.ok) throw new Error(`Mission run returned ${result.status}`);
+
+      const data = (await result.json()) as MissionRunResult;
+
+      if (data.event) {
+        setMissionEvents((current) => [...current, data.event as MissionEvent].slice(-80));
+      }
+
+      setMissionArtifact(data.artifact ?? null);
+      setMissionTask(data.task ?? null);
+      setMissions(data.missions ?? []);
+      setAgentActivity(data.agents ?? {});
+      setActiveMissionId(data.mission?.id ?? activeMission.id);
+    } catch {
+      setRuntimeState("degraded");
+    } finally {
+      setAdvancingMissionStage("");
+    }
   };
 
   const generateAssistantReply = async (text: string, uploadedFiles: Attachment[]) => {
@@ -1298,10 +1668,129 @@ export default function Home() {
     if (activeModule === "dashboard") {
       return (
         <div className="command-runtime">
+          <section className="spatial-command-field" aria-label="HELIOS 3D command field">
+            <div className="spatial-copy">
+              <p className="section-label">Mission Field</p>
+              <h3>Good evening, Sharveesh.</h3>
+              <span>{intelligenceStatus} • {selectedAgent.name} • {activeModuleConfig.title}</span>
+              <div className="mission-launch-row" aria-label="Mission presets">
+                {[
+                  { label: "Research", module: "research" as ModuleKey, agent: "Nova" },
+                  { label: "Build", module: "code" as ModuleKey, agent: "Vega" },
+                  { label: "Plan", module: "planning" as ModuleKey, agent: "Orion" },
+                  { label: "Analyze", module: "analytics" as ModuleKey, agent: "Orion" },
+                  { label: "Monitor", module: "swarm" as ModuleKey, agent: "Orion" },
+                ].map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => launchMissionPreset(`${preset.label} mission`, preset.module, preset.agent)}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              {latestMission && (
+                <div className="mission-now">
+                  <b>{latestMission.stage}</b>
+                  <span>{latestMission.title}</span>
+                </div>
+              )}
+              {activeMission && (
+                <div className="mission-control-strip">
+                  <div>
+                    <p className="section-label">Active Mission</p>
+                    <strong>{activeMission.title}</strong>
+                    <span>{[activeMission.stage, activeMission.agent, activeMission.module].filter(Boolean).join(" • ")}</span>
+                  </div>
+                  <div className="mission-stage-actions">
+                    <button
+                      type="button"
+                      disabled={advancingMissionStage.length > 0}
+                      onClick={() => void runMissionWorkflow()}
+                    >
+                      {advancingMissionStage === "Run" ? "..." : "Run"}
+                    </button>
+                    {["Executed", "Reviewed", "Archived"].map((stage) => (
+                      <button
+                        key={stage}
+                        type="button"
+                        disabled={advancingMissionStage.length > 0 || activeMission.stage === stage}
+                        onClick={() => void advanceMission(stage)}
+                      >
+                        {advancingMissionStage === stage ? "..." : stage}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {latestArtifact && (
+                <div className="mission-artifact-panel">
+                  <div>
+                    <p className="section-label">{latestArtifact.kind ?? "Artifact"}</p>
+                    <strong>{latestArtifact.summary ?? "Mission artifact ready."}</strong>
+                    {missionTask && <span>{missionTask.status} • {missionTask.progress ?? 0}%</span>}
+                  </div>
+                  {latestArtifact.evidence && latestArtifact.evidence.length > 0 && (
+                    <div className="artifact-evidence-list">
+                      {latestArtifact.evidence.slice(0, 3).map((item, index) => (
+                        <article key={`${item.name}-${index}`}>
+                          <b>{item.name ?? "Source"}</b>
+                          <span>{item.snippet ?? "No snippet available."}</span>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                  {(!latestArtifact.evidence || latestArtifact.evidence.length === 0) && artifactHighlights.length > 0 && (
+                    <div className="artifact-evidence-list">
+                      {artifactHighlights.map((item, index) => (
+                        <article key={`${item.label}-${index}`}>
+                          <b>{item.label}</b>
+                          <span>{item.value}</span>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="holo-city" aria-hidden="true">
+              {Array.from({ length: 24 }, (_, index) => (
+                <i
+                  key={index}
+                  style={{
+                    "--x": `${(index % 8) * 12 - 42}px`,
+                    "--z": `${Math.floor(index / 8) * 34 - 36}px`,
+                    "--h": `${34 + ((index * 23 + runtimeTick * 3) % 92)}px`,
+                    "--delay": `${index * 80}ms`,
+                  } as CSSProperties}
+                />
+              ))}
+              <b>HELIOS</b>
+            </div>
+          </section>
+
+          <section className="mission-timeline-board">
+            <div className="feature-heading">
+              <p className="section-label">Mission Timeline</p>
+              <strong>{health?.missions?.total_events ?? missionEvents.length} events</strong>
+            </div>
+            <div className="mission-stage-rail">
+              {missionTimelineItems.map((event, index) => (
+                <article className={`mission-stage stage-${event.stage.toLowerCase()}`} key={event.id}>
+                  <span>{index + 1}</span>
+                  <b>{event.stage}</b>
+                  <strong>{event.title}</strong>
+                  <small>{[event.agent, event.module, event.status].filter(Boolean).join(" • ")}</small>
+                </article>
+              ))}
+            </div>
+          </section>
+
           <section className="orchestration-theater">
             <div className="feature-heading">
-              <p className="section-label">Cognitive Operations System</p>
-              <strong>Execution risk: moderate</strong>
+              <p className="section-label">Cognitive Operations</p>
+              <strong>{intelligenceStatus}</strong>
             </div>
             <div className="flow-line">
               {orchestrationFlow.map((node, index) => (
@@ -1394,17 +1883,73 @@ export default function Home() {
 
     if (activeModule === "research") {
       return (
-        <div className="module-special research-board">
-          {researchSources.map((source) => (
-            <article className="evidence-card" key={source.title}>
-              <div>
-                <p className="section-label">{source.status}</p>
-                <h4>{source.title}</h4>
-                <span>{source.note}</span>
-              </div>
-              <strong>{source.confidence}</strong>
-            </article>
-          ))}
+        <div className="module-special research-intelligence-space">
+          <section className="evidence-orbit">
+            <div className="evidence-core">
+              <p className="section-label">Evidence Core</p>
+              <h4>{activeMission?.module === "research" ? activeMission.title : "Research Mission"}</h4>
+              <span>{researchArtifact?.summary ?? "Run a research mission to generate evidence artifacts."}</span>
+              <button
+                type="button"
+                disabled={!activeMission || advancingMissionStage.length > 0}
+                onClick={() => void runMissionWorkflow()}
+              >
+                {advancingMissionStage === "Run" ? "Running" : "Run Research"}
+              </button>
+            </div>
+            {researchEvidence.slice(0, 5).map((item, index) => (
+              <article className={`evidence-node evidence-node-${index + 1}`} key={`${item.name}-${index}`}>
+                <b>{item.name ?? `Signal ${index + 1}`}</b>
+                <span>{item.scope ?? "project"}</span>
+              </article>
+            ))}
+          </section>
+
+          <section className="evidence-workbench">
+            <div className="feature-heading">
+              <p className="section-label">Evidence</p>
+              <strong>{researchEvidence.length} signals</strong>
+            </div>
+            <div className="evidence-list">
+              {researchEvidence.length > 0 ? (
+                researchEvidence.map((item, index) => (
+                  <article className="evidence-card" key={`${item.name}-${index}`}>
+                    <div>
+                      <p className="section-label">{item.scope ?? "source"}</p>
+                      <h4>{item.name ?? `Evidence ${index + 1}`}</h4>
+                      <span>{item.snippet ?? "No snippet available."}</span>
+                    </div>
+                    <strong>{item.match_terms?.length ? `${item.match_terms.length}x` : "Live"}</strong>
+                  </article>
+                ))
+              ) : (
+                researchSources.map((source) => (
+                  <article className="evidence-card" key={source.title}>
+                    <div>
+                      <p className="section-label">{source.status}</p>
+                      <h4>{source.title}</h4>
+                      <span>{source.note}</span>
+                    </div>
+                    <strong>{source.confidence}</strong>
+                  </article>
+                ))
+              )}
+            </div>
+          </section>
+
+          <section className="research-briefing-panel">
+            <p className="section-label">Briefing</p>
+            <h4>{researchArtifact?.kind ? "Artifact ready" : "Awaiting artifact"}</h4>
+            <span>{researchArtifact?.summary ?? "Create or select a Research mission, then run it from this workspace."}</span>
+            <div className="research-briefing-steps">
+              {["Scope", "Gather", "Compare", "Synthesize"].map((step, index) => (
+                <div key={step}>
+                  <b>{index + 1}</b>
+                  <span>{step}</span>
+                </div>
+              ))}
+            </div>
+          </section>
         </div>
       );
     }
@@ -1447,6 +1992,7 @@ export default function Home() {
       return (
         <div className="module-special swarm-map">
           <div className="signal-ring" />
+          <div className="swarm-depth-grid" aria-hidden="true" />
           {agents.map((agent, index) => (
             <button className={`swarm-node node-${index + 1}`} key={agent.name} type="button" onClick={() => setActiveAgent(agent.name)}>
               <b>{agent.name}</b>
@@ -1469,6 +2015,23 @@ export default function Home() {
               <span>{index + 1}</span>
               <h4>{node.title}</h4>
               <p>{node.meta}</p>
+            </article>
+          ))}
+        </div>
+      );
+    }
+
+    if (activeModule === "reasoning") {
+      return (
+        <div className="module-special reasoning-space">
+          <div className="reasoning-root">
+            <b>Intent</b>
+            <span>{intelligenceStatus}</span>
+          </div>
+          {traceEvents.slice(0, 6).map((event, index) => (
+            <article className={`reasoning-node reasoning-node-${index + 1}`} key={`${event.stage}-${index}`}>
+              <b>{event.stage}</b>
+              <span>{event.actor}</span>
             </article>
           ))}
         </div>
@@ -1847,6 +2410,108 @@ export default function Home() {
         </div>
       </section>
 
+      <aside className="agent-dock" aria-label="Agent dock">
+        {agents.map((agent) => {
+          const backendState = agentActivity[agent.name];
+          const state =
+            backendState?.state ??
+            (agent.name === activeAgent
+              ? intelligenceStatus
+              : agent.name === "Nova" && activeModule === "research"
+                ? "Researching"
+                : agent.name === "Vega" && activeModule === "code"
+                  ? "Building"
+                  : "Idle");
+
+          return (
+            <button
+              className={`dock-agent ${agent.name === activeAgent ? "active" : ""} state-${state.toLowerCase()}`}
+              key={agent.name}
+              type="button"
+              onClick={() => setActiveAgent(agent.name)}
+            >
+              <b>{agent.name}</b>
+              <span>{state}</span>
+              {backendState?.last_event && <small>{backendState.last_event}</small>}
+            </button>
+          );
+        })}
+      </aside>
+
+      {missionOpen && (
+        <div className="mission-composer-backdrop" role="presentation" onClick={() => setMissionOpen(false)}>
+          <section className="mission-composer-panel" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <button className="drawer-close" type="button" aria-label="Close mission composer" onClick={() => setMissionOpen(false)}>
+              <Icon name="close" />
+            </button>
+            <div className="mission-composer-visual" aria-hidden="true">
+              <span />
+              <i />
+              <b>MISSION</b>
+            </div>
+            <div className="mission-composer-copy">
+              <p className="eyebrow">HELIOS Mission Composer</p>
+              <h3>Define the objective.</h3>
+              <span>{missionAgent} will route this through {modules.find((item) => item.key === missionModule)?.title ?? "HELIOS"}.</span>
+            </div>
+            <input
+              autoFocus
+              value={missionTitle}
+              placeholder="What should HELIOS accomplish?"
+              onChange={(event) => setMissionTitle(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void createMission();
+              }}
+            />
+            <div className="mission-picker-grid">
+              <div>
+                <p className="section-label">Workspace</p>
+                <div className="mission-picker-options">
+                  {modules.slice(0, 12).map((item) => (
+                    <button
+                      className={item.key === missionModule ? "active" : ""}
+                      key={item.key}
+                      type="button"
+                      onClick={() => {
+                        setMissionModule(item.key);
+                        setMissionAgent(item.agent);
+                      }}
+                    >
+                      <span>{item.icon}</span>
+                      <b>{item.title}</b>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="section-label">Agent</p>
+                <div className="mission-picker-options compact">
+                  {agents.map((agent) => (
+                    <button
+                      className={agent.name === missionAgent ? "active" : ""}
+                      key={agent.name}
+                      type="button"
+                      onClick={() => setMissionAgent(agent.name)}
+                    >
+                      <b>{agent.name}</b>
+                      <small>{agentActivity[agent.name]?.state ?? "Idle"}</small>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <button
+              className="mission-create-button"
+              type="button"
+              disabled={!missionTitle.trim() || isCreatingMission}
+              onClick={() => void createMission()}
+            >
+              {isCreatingMission ? "Creating" : "Create Mission"}
+            </button>
+          </section>
+        </div>
+      )}
+
       {memoryOpen && (
         <div className="memory-drawer" role="dialog" aria-modal="true">
           <div className="drawer-panel">
@@ -1898,7 +2563,7 @@ export default function Home() {
           <div className="command-palette" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
             <input
               autoFocus
-              placeholder="Search commands or jump to a module"
+              placeholder="Cmd K • command HELIOS"
               value={commandQuery}
               onChange={(event) => setCommandQuery(event.target.value)}
             />

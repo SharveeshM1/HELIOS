@@ -55,6 +55,21 @@ from core.runtime_config import (
     MAX_ATTACHMENT_CHARS,
     MAX_CHAT_MESSAGE_CHARS
 )
+from core.shared_bus import (
+    shared_bus
+)
+from core.mission_ledger import (
+    advance_mission,
+    agent_activity,
+    create_mission,
+    latest_missions,
+    load_mission_events,
+    mission_stats,
+    record_mission_event
+)
+from core.mission_workflows import (
+    run_mission_workflow
+)
 
 # =========================================
 # LOAD ENV
@@ -241,6 +256,74 @@ class SourceSearchResponse(BaseModel):
     sources: list[dict]
     stats: dict
     query: str
+
+
+class MissionEventsResponse(BaseModel):
+
+    events: list[dict]
+    missions: list[dict] = Field(
+        default_factory=list
+    )
+    stats: dict
+    agents: dict = Field(
+        default_factory=dict
+    )
+
+
+class MissionRequest(BaseModel):
+
+    title: str = Field(
+        min_length=1,
+        max_length=180
+    )
+    module: str = "planning"
+    agent: str = "Orion"
+    detail: str = Field(
+        default="",
+        max_length=360
+    )
+
+
+class MissionResponse(BaseModel):
+
+    mission: dict
+    events: list[dict]
+    stats: dict
+    agents: dict
+
+
+class MissionAdvanceRequest(BaseModel):
+
+    stage: str = Field(
+        min_length=1,
+        max_length=40
+    )
+    detail: str = Field(
+        default="",
+        max_length=360
+    )
+    agent: str | None = None
+    module: str | None = None
+
+
+class MissionAdvanceResponse(BaseModel):
+
+    mission: dict
+    event: dict
+    missions: list[dict]
+    stats: dict
+    agents: dict
+
+
+class MissionRunResponse(BaseModel):
+
+    mission: dict
+    event: dict
+    artifact: dict
+    task: dict
+    missions: list[dict]
+    stats: dict
+    agents: dict
 
 
 MAX_SOURCE_CONTENT_CHARS = int(
@@ -653,9 +736,167 @@ async def health():
         "cognitive_engine":
         cognitive_engine.status(),
 
+        "missions":
+        {
+            **mission_stats(),
+            "agents": agent_activity()
+        },
+
         "sources":
         source_stats()
     }
+
+
+@app.get("/missions/events", response_model=MissionEventsResponse)
+
+async def mission_events(
+    limit: int = 25
+):
+
+    safe_limit = max(
+        1,
+        min(
+            limit,
+            100
+        )
+    )
+
+    return MissionEventsResponse(
+        events=load_mission_events()[-safe_limit:],
+        missions=latest_missions(),
+        stats=mission_stats(),
+        agents=agent_activity()
+    )
+
+
+@app.post("/missions", response_model=MissionResponse)
+
+async def create_mission_endpoint(
+    request: MissionRequest
+):
+
+    request.module = request.module.strip().lower()
+    request.agent = request.agent.strip() or "Orion"
+
+    if request.module not in ALLOWED_MODULES:
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported HELIOS module: {request.module}"
+        )
+
+    result = await run_in_threadpool(
+        create_mission,
+        request.title,
+        agent=request.agent,
+        module=request.module,
+        detail=request.detail
+    )
+
+    return MissionResponse(
+        mission=result["mission"],
+        events=result["events"],
+        stats=mission_stats(),
+        agents=agent_activity()
+    )
+
+
+@app.post("/missions/{mission_id}/advance", response_model=MissionAdvanceResponse)
+
+async def advance_mission_endpoint(
+    mission_id: str,
+    request: MissionAdvanceRequest
+):
+
+    module = (
+        request.module.strip().lower()
+        if request.module
+        else None
+    )
+
+    if module and module not in ALLOWED_MODULES:
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported HELIOS module: {module}"
+        )
+
+    try:
+
+        result = await run_in_threadpool(
+            advance_mission,
+            mission_id,
+            request.stage,
+            agent=request.agent,
+            module=module,
+            detail=request.detail
+        )
+
+    except ValueError as error:
+
+        raise HTTPException(
+            status_code=404,
+            detail=str(error)
+        ) from error
+
+    return MissionAdvanceResponse(
+        mission=result["mission"],
+        event=result["event"],
+        missions=latest_missions(),
+        stats=mission_stats(),
+        agents=agent_activity()
+    )
+
+
+@app.post("/missions/{mission_id}/run", response_model=MissionRunResponse)
+
+async def run_mission_endpoint(
+    mission_id: str
+):
+
+    mission = None
+
+    for item in latest_missions(
+        limit=100
+    ):
+
+        if item.get("id") == mission_id:
+
+            mission = item
+            break
+
+    if mission is None:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Mission not found."
+        )
+
+    workflow = await run_in_threadpool(
+        run_mission_workflow,
+        mission
+    )
+
+    result = await run_in_threadpool(
+        advance_mission,
+        mission_id,
+        "Executed",
+        detail=workflow["artifact"].get(
+            "summary",
+            "Mission workflow executed."
+        ),
+        artifact=workflow["artifact"]
+    )
+
+    return MissionRunResponse(
+        mission=result["mission"],
+        event=result["event"],
+        artifact=workflow["artifact"],
+        task=workflow["task"],
+        missions=latest_missions(),
+        stats=mission_stats(),
+        agents=agent_activity()
+    )
 
 
 @app.get("/sources")
@@ -720,6 +961,16 @@ async def save_source(
         request.scope
     )
 
+    await run_in_threadpool(
+        record_mission_event,
+        "Archived",
+        f"Indexed source: {source_name}",
+        agent="Nova",
+        module="knowledge",
+        status="archived" if source_content else "pending",
+        detail=f"{request.scope} source saved for retrieval."
+    )
+
     return SourceResponse(
         source=source,
         stats=source_stats()
@@ -748,9 +999,29 @@ async def chat(
         not request.attachments
     ):
 
+        await run_in_threadpool(
+            record_mission_event,
+            "Created",
+            request.message,
+            agent=request.agent,
+            module=request.module,
+            status="active",
+            detail="Direct dashboard request received."
+        )
+
         response = await run_in_threadpool(
             generate_response,
             request.message
+        )
+
+        await run_in_threadpool(
+            record_mission_event,
+            "Reviewed",
+            request.message,
+            agent=request.agent,
+            module=request.module,
+            status="reviewed",
+            detail="Fast chat response completed."
         )
 
         return ChatResponse(
@@ -780,6 +1051,16 @@ async def chat(
         request.module,
         request.agent,
         request.attachments
+    )
+
+    await run_in_threadpool(
+        record_mission_event,
+        "Executed",
+        request.message,
+        agent=request.agent,
+        module=request.module,
+        status="executed",
+        detail="Cognitive engine completed a module-scoped run."
     )
 
     status = cognitive_engine.status()

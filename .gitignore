@@ -28,6 +28,11 @@ build/
 temp_audio/
 backend/temp_audio/
 compilation_results.txt
+memory/*.json
+backend/memory/*.json
+memory/auto_generated.py
+backend/memory/auto_generated.py
 
 # OS/editor
 .DS_Store
+.vscode/

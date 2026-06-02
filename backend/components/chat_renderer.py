@@ -2,7 +2,6 @@ import html
 import streamlit as st
 import re
 from utils.ui_utils import safe_text
-from components.ui import render_system_notice
 
 # =========================================
 # MAX RESPONSE SIZE
@@ -26,23 +25,6 @@ def clean_response(text):
     # =====================================
 
     text = text[:MAX_RESPONSE_CHARS]
-
-    # =====================================
-    # REMOVE FENCED CODE BLOCKS
-    # =====================================
-
-    text = re.sub(
-        r"```[a-zA-Z0-9_-]*[\s\S]*?```",
-        "",
-        text,
-        flags=re.IGNORECASE
-    )
-
-    text = re.sub(
-        r"```",
-        "",
-        text
-    )
 
     # =====================================
     # REMOVE DANGEROUS TAGS
@@ -99,6 +81,116 @@ def clean_response(text):
     )
 
     return text.strip()
+
+
+def response_to_html(text):
+
+    clean_text = clean_response(
+        text
+    )
+
+    parts = []
+    cursor = 0
+
+    for match in re.finditer(
+        r"```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)```",
+        clean_text
+    ):
+
+        before = clean_text[cursor:match.start()]
+
+        if before.strip():
+
+            parts.append(
+                _plain_text_to_html(
+                    before
+                )
+            )
+
+        language = html.escape(
+            match.group(1).strip()
+        )
+
+        code = html.escape(
+            match.group(2).strip()
+        )
+
+        label = (
+            f"<span>{language}</span>"
+            if language
+            else ""
+        )
+
+        parts.append(
+            f"""
+            <pre class="helios-code-block">{label}<code>{code}</code></pre>
+            """
+        )
+
+        cursor = match.end()
+
+    remainder = clean_text[cursor:]
+
+    if remainder.strip():
+
+        parts.append(
+            _plain_text_to_html(
+                remainder
+            )
+        )
+
+    return "".join(
+        parts
+    )
+
+
+def _plain_text_to_html(text):
+
+    escaped = html.escape(
+        str(text or "").strip()
+    )
+
+    escaped = re.sub(
+        r"\*\*(.*?)\*\*",
+        r"<strong>\1</strong>",
+        escaped
+    )
+
+    lines = escaped.splitlines()
+    html_lines = []
+
+    for line in lines:
+
+        stripped = line.strip()
+
+        if not stripped:
+
+            html_lines.append(
+                "<br>"
+            )
+            continue
+
+        if stripped.startswith("### "):
+
+            html_lines.append(
+                f"<h4>{stripped[4:]}</h4>"
+            )
+            continue
+
+        if stripped.startswith(("- ", "* ")):
+
+            html_lines.append(
+                f"<p class=\"helios-answer-bullet\">{stripped[2:]}</p>"
+            )
+            continue
+
+        html_lines.append(
+            f"<p>{stripped}</p>"
+        )
+
+    return "\n".join(
+        html_lines
+    )
 
 # =========================================
 # SANITIZE OUTPUT
@@ -194,21 +286,13 @@ def render_ai_response(response):
         response
     )
 
-    safe_response = sanitize_output(
+    safe_response = response_to_html(
         cleaned
     )
 
-    line_count = len(
-        [
-            line
-            for line in cleaned.splitlines()
-            if line.strip()
-        ]
-    )
-
     confidence = (
-        "High"
-        if len(cleaned) > 120
+        "Ready"
+        if cleaned
         else "Draft"
     )
 
@@ -219,84 +303,16 @@ def render_ai_response(response):
     <div class="ai-avatar">H</div>
     <div>
         <strong>HELIOS</strong>
-        <span>Answer • reasoning summary • actions</span>
+        <span>Direct answer</span>
     </div>
     <em>{confidence}</em>
 </div>
-<div class="ai-response-grid">
-    <section>
-        <span>Answer</span>
-        <div class="ai-response-body">
-        {safe_response}
-        </div>
-    </section>
-    <aside>
-        <span>Reasoning Summary</span>
-        <strong>{line_count} response lines analyzed</strong>
-        <p>HELIOS routed the request through the active reactor mode, generated a concise answer, and stored this turn for session memory.</p>
-        <div class="ai-action-list">
-            <em>Review</em>
-            <em>Export</em>
-            <em>Follow up</em>
-        </div>
-    </aside>
+<div class="ai-response-body">
+    {safe_response}
 </div>
 </div>
         """,
         unsafe_allow_html=True
     )
-
-    action_cols = st.columns(
-        3,
-        gap="small"
-    )
-
-    with action_cols[0]:
-
-        if st.button(
-            "Copy answer",
-            key=f"copy_answer_{hash(cleaned)}",
-            use_container_width=True
-        ):
-
-            render_system_notice(
-                "success",
-                "Copy prepared",
-                "Browser clipboard access is limited in Streamlit, so export remains available beside it."
-            )
-
-    with action_cols[1]:
-
-        st.download_button(
-            "Export answer",
-            data=cleaned,
-            file_name="helios-answer.md",
-            mime="text/markdown",
-            key=f"export_answer_{hash(cleaned)}",
-            use_container_width=True
-        )
-
-    with action_cols[2]:
-
-        if st.button(
-            "Create action",
-            key=f"action_answer_{hash(cleaned)}",
-            use_container_width=True
-        ):
-
-            render_system_notice(
-                "success",
-                "Action staged",
-                "Use the Command Reactor to run the next step."
-            )
-
-    with st.expander(
-        "Reasoning trace",
-        expanded=False
-    ):
-
-        st.markdown(
-            "- Reactor mode selected\n- Agent route resolved\n- Context checked\n- Response stored in session memory"
-        )
 
     return cleaned

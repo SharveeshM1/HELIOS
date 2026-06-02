@@ -99,8 +99,14 @@ button[title*="sidebar" i]{
     left:0;
     bottom:0;
     width:292px;
-    padding:16px 14px 22px;
-    overflow-y:auto;
+    max-height:100dvh;
+    box-sizing:border-box;
+    padding:16px 14px max(96px, env(safe-area-inset-bottom));
+    overflow-x:hidden;
+    overflow-y:scroll;
+    overscroll-behavior:contain;
+    scrollbar-gutter:stable;
+    -webkit-overflow-scrolling:touch;
     background:
         linear-gradient(90deg,rgba(255,101,104,.18),transparent 28%,transparent 72%,rgba(255,255,255,.035)),
         radial-gradient(circle at 22% 0%,rgba(102,21,24,.26),transparent 34%),
@@ -113,7 +119,7 @@ button[title*="sidebar" i]{
 
 .helios-recovery-sidebar.is-collapsed{
     width:72px;
-    padding:16px 10px 22px;
+    padding:16px 10px max(96px, env(safe-area-inset-bottom));
     overflow-x:hidden;
 }
 
@@ -1874,13 +1880,15 @@ div[role="radiogroup"] label:has(input:checked){
 }
 
 .helios-thinking-card{
-    min-height:126px;
+    max-width:520px;
+    min-height:92px;
     display:grid;
-    grid-template-columns:58px minmax(0,1fr);
+    grid-template-columns:38px minmax(0,1fr);
     align-items:center;
-    gap:18px;
-    margin:12px 0 18px;
-    padding:22px 26px !important;
+    gap:12px;
+    margin:12px 0 18px auto;
+    padding:14px !important;
+    border-radius:18px !important;
     background:
         radial-gradient(circle at 18% 18%,rgba(255,101,104,.16),transparent 30%),
         linear-gradient(135deg,rgba(102,21,24,.18),rgba(26,21,21,.88) 64%),
@@ -1888,15 +1896,15 @@ div[role="radiogroup"] label:has(input:checked){
 }
 
 .helios-thinking-orb{
-    width:48px;
-    height:48px;
+    width:34px;
+    height:34px;
     align-self:start;
     margin-top:2px;
 }
 
 .helios-thinking-orb span{
-    width:22px;
-    height:22px;
+    width:16px;
+    height:16px;
 }
 
 .helios-thinking-main{
@@ -1915,7 +1923,7 @@ div[role="radiogroup"] label:has(input:checked){
 .helios-thinking-top strong{
     min-width:0;
     color:#fff;
-    font-size:20px;
+    font-size:15px;
     font-weight:860;
     line-height:1.1;
     overflow:hidden;
@@ -1925,9 +1933,9 @@ div[role="radiogroup"] label:has(input:checked){
 
 .helios-thinking-top em{
     flex:0 0 auto;
-    min-height:30px;
-    padding:0 12px;
-    font-size:12px;
+    min-height:26px;
+    padding:0 10px;
+    font-size:11px;
     font-style:normal;
     font-weight:820;
 }
@@ -1935,11 +1943,12 @@ div[role="radiogroup"] label:has(input:checked){
 .helios-thinking-main p{
     margin:0 !important;
     color:#c8bfbb !important;
-    font-size:15px !important;
+    font-size:13px !important;
     line-height:1.45 !important;
 }
 
 .helios-processing-steps{
+    display:none;
     justify-content:flex-start;
     gap:6px;
 }
@@ -4517,9 +4526,10 @@ div[data-testid="column"]{
 }
 
 .helios-user-message{
-    max-width:920px;
+    max-width:520px;
     margin:18px 0 10px auto;
-    padding:16px 18px !important;
+    padding:13px 14px !important;
+    border-radius:18px !important;
     border-color:rgba(255,101,104,.26) !important;
     background:
         linear-gradient(135deg,rgba(255,101,104,.18),rgba(255,255,255,.028)),
@@ -4528,16 +4538,16 @@ div[data-testid="column"]{
 
 .helios-user-message-header{
     display:grid;
-    grid-template-columns:38px minmax(0,1fr);
+    grid-template-columns:32px minmax(0,1fr);
     align-items:center;
-    gap:11px;
-    margin-bottom:12px;
+    gap:10px;
+    margin-bottom:9px;
 }
 
 .helios-user-avatar{
-    width:38px;
-    height:38px;
-    display:grid;
+    width:32px;
+    height:32px;
+    display:none;
     place-items:center;
     border-radius:12px;
     color:#fff;
@@ -4555,7 +4565,7 @@ div[data-testid="column"]{
 
 .helios-user-message-header strong{
     color:#fff;
-    font-size:16px;
+    font-size:14px;
     font-weight:880;
     line-height:1.15;
 }
@@ -4570,23 +4580,24 @@ div[data-testid="column"]{
 
 .helios-user-message-body{
     color:#f4eeee;
-    font-size:15px;
-    line-height:1.62;
+    font-size:14px;
+    line-height:1.55;
     overflow-wrap:anywhere;
 }
 
 .helios-assistant-message{
-    max-width:760px;
-    margin:12px auto 16px 0;
-    padding:16px 18px !important;
+    max-width:520px;
+    margin:12px 0 16px auto;
+    padding:13px 14px !important;
+    border-radius:18px !important;
 }
 
 .helios-assistant-message-header{
     display:grid;
-    grid-template-columns:42px minmax(0,1fr);
+    grid-template-columns:34px minmax(0,1fr);
     align-items:center;
-    gap:12px;
-    margin-bottom:12px;
+    gap:10px;
+    margin-bottom:9px;
 }
 
 .helios-assistant-message-header strong,
@@ -4596,7 +4607,7 @@ div[data-testid="column"]{
 
 .helios-assistant-message-header strong{
     color:#fff;
-    font-size:17px;
+    font-size:14px;
     font-weight:880;
     line-height:1.15;
 }
@@ -4611,32 +4622,34 @@ div[data-testid="column"]{
 
 .helios-assistant-message-body{
     color:#e8e3e0;
-    font-size:15px;
-    line-height:1.62;
+    font-size:14px;
+    line-height:1.58;
     overflow-wrap:anywhere;
 }
 
 .ai-response-card{
-    margin:18px 0 16px;
-    padding:18px !important;
+    max-width:520px;
+    margin:12px 0 16px auto;
+    padding:14px !important;
+    border-radius:18px !important;
 }
 
 .ai-card-header{
     display:grid;
-    grid-template-columns:42px minmax(0,1fr) auto;
+    grid-template-columns:34px minmax(0,1fr) auto;
     align-items:center;
-    gap:12px;
-    margin-bottom:14px;
+    gap:10px;
+    margin-bottom:10px;
 }
 
 .ai-avatar{
-    width:42px;
-    height:42px;
+    width:34px;
+    height:34px;
     display:grid;
     place-items:center;
-    border-radius:14px;
+    border-radius:11px;
     color:#fff;
-    font-size:18px;
+    font-size:15px;
     font-weight:900;
     background:linear-gradient(135deg,#ff6568,#8b1a1e);
     border:1px solid rgba(255,255,255,.18);
@@ -4650,7 +4663,7 @@ div[data-testid="column"]{
 
 .ai-card-header strong{
     color:#fff;
-    font-size:18px;
+    font-size:14px;
     font-weight:880;
     line-height:1.12;
 }
@@ -4664,9 +4677,16 @@ div[data-testid="column"]{
 }
 
 .ai-card-header em{
-    min-height:32px;
+    min-height:26px;
+    display:inline-flex;
+    align-items:center;
+    padding:0 10px;
+    border-radius:999px;
+    color:#ffd6d7;
+    background:rgba(255,101,104,.10);
+    border:1px solid rgba(255,101,104,.22);
     font-style:normal;
-    font-size:12px;
+    font-size:11px;
     font-weight:840;
 }
 
@@ -4688,16 +4708,69 @@ div[data-testid="column"]{
 
 .ai-response-body{
     color:#e8e3e0;
-    line-height:1.72;
-    font-size:15px;
+    line-height:1.58;
+    font-size:14px;
     overflow-wrap:anywhere;
     white-space:normal;
 }
 
-.ai-response-body br{
-    display:block;
+.ai-response-body p{
+    margin:0 0 10px !important;
+    color:#e8e3e0 !important;
+    font-size:14px !important;
+    line-height:1.58 !important;
+}
+
+.ai-response-body h4{
+    margin:12px 0 8px !important;
+    color:#fff !important;
+    font-size:14px !important;
+    line-height:1.25 !important;
+}
+
+.helios-answer-bullet{
+    position:relative;
+    padding-left:16px;
+}
+
+.helios-answer-bullet:before{
     content:"";
-    margin:8px 0;
+    position:absolute;
+    left:2px;
+    top:.72em;
+    width:5px;
+    height:5px;
+    border-radius:999px;
+    background:#ff6568;
+}
+
+.helios-code-block{
+    position:relative;
+    margin:10px 0 12px !important;
+    padding:34px 12px 12px !important;
+    border-radius:14px !important;
+    background:#070606 !important;
+    border:1px solid rgba(255,255,255,.12) !important;
+    box-shadow:0 16px 36px rgba(0,0,0,.32) inset !important;
+    overflow:auto !important;
+}
+
+.helios-code-block span{
+    position:absolute;
+    top:9px;
+    left:12px;
+    color:#ffb9bb;
+    font-size:11px;
+    font-weight:820;
+    text-transform:uppercase;
+}
+
+.helios-code-block code{
+    display:block;
+    color:#f7eeee !important;
+    font-size:12.5px !important;
+    line-height:1.55 !important;
+    white-space:pre !important;
 }
 
 .ai-response-grid aside strong{
@@ -4759,11 +4832,12 @@ div[data-testid="column"]{
 /* Bottom command input */
 div[data-testid="stBottomBlockContainer"]{
     position:fixed !important;
-    left:326px !important;
+    left:auto !important;
     right:28px !important;
     bottom:18px !important;
     z-index:999998 !important;
-    width:auto !important;
+    width:520px !important;
+    max-width:calc(100vw - 354px) !important;
     min-height:auto !important;
     padding:0 !important;
     background:transparent !important;
@@ -4772,7 +4846,7 @@ div[data-testid="stBottomBlockContainer"]{
 
 [data-testid="stChatInput"]{
     position:relative !important;
-    width:min(100%,1320px) !important;
+    width:100% !important;
     min-height:72px !important;
     margin:0 auto !important;
     padding:10px 12px !important;
@@ -5046,9 +5120,11 @@ div[data-testid="stBottomBlockContainer"]{
 
 @media (max-width:1180px){
     div[data-testid="stBottomBlockContainer"]{
-        left:104px !important;
+        left:auto !important;
         right:18px !important;
         bottom:14px !important;
+        width:520px !important;
+        max-width:calc(100vw - 122px) !important;
         padding:0 !important;
     }
     .helios-live-hero{
@@ -5067,6 +5143,8 @@ div[data-testid="stBottomBlockContainer"]{
     div[data-testid="stBottomBlockContainer"]{
         left:14px !important;
         right:14px !important;
+        width:auto !important;
+        max-width:none !important;
         bottom:12px !important;
         padding:0 !important;
     }

@@ -1,4 +1,0 @@
-{
-    "model_name": "qwen2.5:3b",
-    "startup_stack": "qwen2.5:3b with Ollama."
-}
