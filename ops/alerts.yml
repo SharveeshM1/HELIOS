@@ -1,0 +1,20 @@
+groups:
+  - name: helios
+    rules:
+      - alert: HeliosBackendDown
+        expr: up{job="helios-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: HELIOS backend is unavailable
+          description: Prometheus has not been able to scrape HELIOS for two minutes.
+
+      - alert: HeliosToolFailureRateHigh
+        expr: helios_tool_failure_rate > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: HELIOS tool failure rate is high
+          description: More than 20 percent of recent tool events are failing.

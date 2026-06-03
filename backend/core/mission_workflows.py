@@ -5,7 +5,10 @@ from typing import Dict
 from typing import List
 
 from core.planning_engine import PlanningEngine
+from core.code_workflow import run_code_execution_workflow
+from core.research_grounding import build_grounded_research_artifact
 from core.runtime_config import PROJECT_DIR
+from core.swarm_engine import build_consensus
 from core.source_library import search_sources
 from core.source_library import source_stats
 from core.task_engine import create_task
@@ -81,15 +84,23 @@ def _research_artifact(
             for term in item.get("match_terms", [])
         }
     )
+    grounding = build_grounded_research_artifact(
+        title,
+        evidence,
+        source_stats()
+    )
 
     return {
         "kind": "research",
         "summary": (
-            f"Mapped {len(evidence)} source signals for this mission."
+            f"Mapped {len(evidence)} cited source signal(s) for this mission."
             if evidence
             else "No indexed source evidence matched yet. Add sources or broaden the mission query."
         ),
         "evidence": evidence,
+        "citations": grounding["citations"],
+        "claims": grounding["claims"],
+        "grounded_answer": grounding["grounded_answer"],
         "coverage": {
             "query_terms": terms,
             "matched_terms": matched_terms,
@@ -98,6 +109,12 @@ def _research_artifact(
                 for term in terms
                 if term not in matched_terms
             ],
+            "citation_count": len(
+                grounding["citations"]
+            ),
+            "grounded": bool(
+                grounding["citations"]
+            ),
             **source_stats()
         }
     }
@@ -218,23 +235,36 @@ def _code_artifact(
         signal["path"]
         for signal in file_signals
     ]
+    workflow = run_code_execution_workflow(
+        title,
+        target_files=target_files
+    )
 
     return {
         "kind": "code",
         "summary": (
-            f"Mapped {len(file_signals)} likely implementation files."
-            if file_signals
-            else "No matching implementation files found yet. Start by naming the target module or file."
+            workflow.get(
+                "summary"
+            )
+            or (
+                f"Mapped {len(file_signals)} likely implementation files."
+                if file_signals
+                else "No matching implementation files found yet. Start by naming the target module or file."
+            )
         ),
         "checks": [
             "Identify target files",
-            "Map implementation risk",
-            "Run verification",
+            "Apply bounded edits when requested",
+            "Run verification through the execution ledger",
             "Prepare patch review"
         ],
         "target": title,
-        "target_files": target_files,
-        "file_signals": file_signals
+        "target_files": workflow.get(
+            "target_files",
+            target_files
+        ),
+        "file_signals": file_signals,
+        "execution": workflow
     }
 
 
@@ -323,11 +353,25 @@ def _swarm_artifact(
     plan = PlanningEngine().create_plan(
         title
     )
+    synthetic_results = [
+        {
+            "agent": f"{item['agent'].title()} Agent",
+            "output": item["objective"],
+            "status": "completed",
+            "duration": 0
+        }
+        for item in plan["tasks"]
+    ]
+    consensus = build_consensus(
+        synthetic_results
+    )
 
     return {
         "kind": "swarm",
         "summary": f"Prepared {len(plan['tasks'])} agent assignment(s) for coordinated execution.",
         "assignments": plan["tasks"],
+        "debate": consensus["debate"],
+        "consensus": consensus,
         "target": title
     }
 

@@ -18,6 +18,57 @@ ENVIRONMENT = os.getenv(
     "local"
 )
 
+API_KEY = os.getenv(
+    "HELIOS_API_KEY",
+    ""
+).strip()
+
+AUTH_SECRET = os.getenv(
+    "HELIOS_AUTH_SECRET",
+    API_KEY
+).strip()
+
+ADMIN_USERNAME = os.getenv(
+    "HELIOS_ADMIN_USERNAME",
+    "admin"
+).strip()
+
+ADMIN_PASSWORD = os.getenv(
+    "HELIOS_ADMIN_PASSWORD",
+    ""
+).strip()
+
+TOKEN_TTL_MINUTES = int(
+    os.getenv(
+        "HELIOS_TOKEN_TTL_MINUTES",
+        "480"
+    )
+)
+
+RATE_LIMIT_PER_MINUTE = int(
+    os.getenv(
+        "HELIOS_RATE_LIMIT_PER_MINUTE",
+        "120"
+    )
+)
+
+STORAGE_BACKEND = os.getenv(
+    "HELIOS_STORAGE_BACKEND",
+    "json"
+).strip().lower()
+
+DATABASE_URL = os.getenv(
+    "HELIOS_DATABASE_URL",
+    ""
+).strip()
+
+WORKER_LEASE_SECONDS = int(
+    os.getenv(
+        "HELIOS_WORKER_LEASE_SECONDS",
+        "90"
+    )
+)
+
 MAX_CHAT_MESSAGE_CHARS = int(
     os.getenv(
         "HELIOS_MAX_CHAT_MESSAGE_CHARS",

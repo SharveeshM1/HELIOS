@@ -12,6 +12,8 @@ from typing import List
 
 from core.runtime_config import MEMORY_DIR
 from core.runtime_config import ensure_runtime_dirs
+from core.runtime_store import load_document
+from core.runtime_store import save_document
 
 SOURCE_FILE = MEMORY_DIR / "source_library.json"
 MAX_SOURCE_CHARS = 12000
@@ -53,6 +55,24 @@ def load_sources() -> List[Dict]:
 
     with source_lock:
 
+        stored = load_document(
+            "source_library",
+            None
+        )
+
+        if isinstance(
+            stored,
+            list
+        ):
+
+            return [
+                item
+                for item in stored
+                if isinstance(item, dict)
+                and item.get("id")
+                and item.get("name")
+            ]
+
         if not SOURCE_FILE.exists():
 
             return []
@@ -91,6 +111,13 @@ def save_sources(
 ) -> None:
 
     with source_lock:
+
+        if save_document(
+            "source_library",
+            sources[-MAX_SOURCES:]
+        ):
+
+            return
 
         _atomic_write(
             SOURCE_FILE,

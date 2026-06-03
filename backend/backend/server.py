@@ -5,6 +5,7 @@ import uuid
 import asyncio
 
 from fastapi import (
+    BackgroundTasks,
     FastAPI,
     HTTPException,
     Request,
@@ -12,6 +13,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect
 )
+from fastapi.responses import JSONResponse
 
 from fastapi.middleware.cors import (
     CORSMiddleware
@@ -42,18 +44,63 @@ except Exception:
 from core.cognitive_engine import (
     CognitiveEngine
 )
+from core.code_workflow import (
+    run_general_code_repair,
+    run_structured_code_repair
+)
 from core.source_library import (
     load_sources,
     search_sources,
     source_stats,
     upsert_source
 )
+from core.research_grounding import (
+    build_grounded_research_artifact
+)
+from core.project_brain import (
+    build_project_brain
+)
+from core.observability import (
+    build_observability_report
+)
+from core.git_workflow import (
+    commit_staged_changes,
+    git_status
+)
+from core.autonomous_runs import (
+    cancel_run,
+    create_run,
+    execute_run,
+    get_run,
+    load_runs,
+    queue_run,
+    reconcile_run,
+    resume_run
+)
+from core.auth import (
+    authenticate_user,
+    create_user,
+    has_permission,
+    issue_token,
+    load_users,
+    public_user,
+    verify_token
+)
 from core.runtime_config import (
     ALLOWED_MODULES,
+    API_KEY,
     APP_VERSION,
+    AUTH_SECRET,
     ENVIRONMENT,
     MAX_ATTACHMENT_CHARS,
-    MAX_CHAT_MESSAGE_CHARS
+    MAX_CHAT_MESSAGE_CHARS,
+    RATE_LIMIT_PER_MINUTE,
+    STORAGE_BACKEND
+)
+from core.runtime_store import (
+    allow_rate_limited_request,
+    list_jobs,
+    storage_status
 )
 from core.shared_bus import (
     shared_bus
@@ -70,6 +117,14 @@ from core.mission_ledger import (
 from core.mission_workflows import (
     run_mission_workflow
 )
+from core.tool_executor import (
+    execute_agent_tool
+)
+from core.tool_manager import (
+    execute_tool,
+    list_tools
+)
+from memory import execution_memory
 
 # =========================================
 # LOAD ENV
@@ -98,6 +153,24 @@ logger = logging.getLogger(
 
 STARTED_AT = time.time()
 REQUEST_COUNT = 0
+RATE_BUCKETS = {}
+PUBLIC_PATHS = {
+    "/health",
+    "/ready",
+    "/metrics",
+    "/voice/status",
+    "/auth/login"
+}
+
+PERMISSION_PREFIXES = {
+    "/git/commit": "commit",
+    "/tools/execute": "execute",
+    "/code/repair": "write",
+    "/autonomy/runs": "execute",
+    "/missions": "execute",
+    "/sources": "write",
+    "/auth/users": "admin"
+}
 
 
 def parse_csv_env(name, fallback):
@@ -174,6 +247,13 @@ RESPONSE RULES
 
 """
 
+CONVERSATION_MODES = {
+    "balanced": "Answer clearly, balance speed with useful depth, and stay scoped.",
+    "concise": "Answer directly in the smallest useful form.",
+    "deep": "Analyze tradeoffs, risks, and implementation details before concluding.",
+    "execute": "Prioritize actionable steps, tools, verification, and concrete outcomes."
+}
+
 # =========================================
 # FASTAPI APP
 # =========================================
@@ -216,6 +296,7 @@ class ChatRequest(BaseModel):
     )
     module: str = "dashboard"
     agent: str = "HELIOS"
+    mode: str = "balanced"
     attachments: list[dict] = Field(
         default_factory=list
     )
@@ -226,8 +307,13 @@ class ChatResponse(BaseModel):
     response: str
     module: str
     agent: str
+    mode: str
     trace: list[dict]
     plan: list[dict]
+    citations: list[dict] = Field(
+        default_factory=list
+    )
+    grounded: bool = False
 
 
 class SourceRequest(BaseModel):
@@ -256,6 +342,20 @@ class SourceSearchResponse(BaseModel):
     sources: list[dict]
     stats: dict
     query: str
+
+
+class SourceIntelligenceResponse(BaseModel):
+
+    query: str
+    sources: list[dict]
+    citations: list[dict]
+    claims: list[dict]
+    grounded_answer: str
+    coverage: dict
+    stats: dict
+    graph: dict = Field(
+        default_factory=dict
+    )
 
 
 class MissionEventsResponse(BaseModel):
@@ -326,6 +426,161 @@ class MissionRunResponse(BaseModel):
     agents: dict
 
 
+class ToolExecuteRequest(BaseModel):
+
+    tool: str = Field(
+        min_length=1,
+        max_length=80
+    )
+    args: list = Field(
+        default_factory=list
+    )
+    kwargs: dict = Field(
+        default_factory=dict
+    )
+    agent: str | None = None
+    module: str = "dashboard"
+    retries: int = Field(
+        default=0,
+        ge=0,
+        le=2
+    )
+
+
+class ToolExecuteResponse(BaseModel):
+
+    tool: str
+    status: str
+    result: object | None = None
+    error: str | None = None
+    events: list[dict]
+    stats: dict
+
+
+class ExecutionEventsResponse(BaseModel):
+
+    events: list[dict]
+    stats: dict
+
+
+class ProjectBrainResponse(BaseModel):
+
+    nodes: list[dict]
+    links: list[dict]
+    stats: dict
+    summary: dict
+
+
+class ObservabilityResponse(BaseModel):
+
+    stats: dict
+    window: dict
+    rates: dict
+    tool_counts: dict
+    status_counts: dict
+    slow_tools: list[dict]
+    recent_failures: list[dict]
+    recommendations: list[str]
+
+
+class GitCommitRequest(BaseModel):
+
+    message: str = Field(
+        min_length=1,
+        max_length=240
+    )
+    confirm: bool = False
+
+
+class GitCommitResponse(BaseModel):
+
+    status: str
+    reason: str | None = None
+    message: str | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+    return_code: int | None = None
+    git: dict
+
+
+class VoiceStatusResponse(BaseModel):
+
+    realtime_available: bool
+    openai_key_configured: bool
+    model: str
+    voice: str
+    max_offer_bytes: int
+    status: str
+
+
+class AutonomousRunRequest(BaseModel):
+
+    objective: str = Field(
+        min_length=1,
+        max_length=MAX_CHAT_MESSAGE_CHARS
+    )
+
+
+class AutonomousRunResponse(BaseModel):
+
+    run: dict
+
+
+class CodeRepairRequest(BaseModel):
+
+    objective: str = Field(
+        min_length=1,
+        max_length=MAX_CHAT_MESSAGE_CHARS
+    )
+    edits: list[dict] = Field(
+        default_factory=list
+    )
+    verification_commands: list[str] = Field(
+        default_factory=list
+    )
+    verification_attempts: int = Field(
+        default=2,
+        ge=1,
+        le=3
+    )
+
+
+class GeneralCodeRepairRequest(BaseModel):
+
+    objective: str = Field(
+        min_length=1,
+        max_length=MAX_CHAT_MESSAGE_CHARS
+    )
+    target_files: list[str] = Field(
+        default_factory=list
+    )
+    verification_commands: list[str] = Field(
+        default_factory=list
+    )
+    repair_attempts: int = Field(
+        default=2,
+        ge=1,
+        le=3
+    )
+
+
+class LoginRequest(BaseModel):
+
+    username: str = Field(
+        min_length=1,
+        max_length=80
+    )
+    password: str = Field(
+        min_length=1,
+        max_length=240
+    )
+
+
+class UserCreateRequest(LoginRequest):
+
+    role: str = "viewer"
+
+
 MAX_SOURCE_CONTENT_CHARS = int(
     os.getenv(
         "HELIOS_MAX_SOURCE_CONTENT_CHARS",
@@ -343,6 +598,13 @@ OPENAI_REALTIME_VOICE = os.getenv(
     "marin"
 )
 
+MAX_REALTIME_OFFER_BYTES = int(
+    os.getenv(
+        "HELIOS_MAX_REALTIME_OFFER_BYTES",
+        "120000"
+    )
+)
+
 
 @app.middleware("http")
 
@@ -354,6 +616,11 @@ async def request_observability(
     global REQUEST_COUNT
 
     REQUEST_COUNT += 1
+    client_host = (
+        request.client.host
+        if request.client
+        else "unknown"
+    )
     request_id = request.headers.get(
         "x-request-id",
         str(
@@ -361,6 +628,124 @@ async def request_observability(
         )
     )
     started = time.perf_counter()
+    auth_header = request.headers.get(
+        "authorization",
+        ""
+    )
+    token = (
+        auth_header[7:].strip()
+        if auth_header.lower().startswith(
+            "bearer "
+        )
+        else ""
+    )
+    user = verify_token(
+        token
+    ) if token else None
+    request.state.helios_user = user
+
+    if (
+        (
+            API_KEY
+            or AUTH_SECRET
+        )
+        and
+        request.url.path not in PUBLIC_PATHS
+        and
+        (
+            not API_KEY
+            or request.headers.get(
+                "x-helios-api-key",
+                ""
+            )
+            != API_KEY
+        )
+        and user is None
+    ):
+
+        return JSONResponse(
+            status_code=401,
+            content={
+                "detail": "Missing or invalid HELIOS API key."
+            }
+        )
+
+    required_permission = next(
+        (
+            permission
+            for prefix, permission in PERMISSION_PREFIXES.items()
+            if request.url.path.startswith(
+                prefix
+            )
+            and request.method not in {
+                "GET",
+                "HEAD",
+                "OPTIONS"
+            }
+        ),
+        None
+    )
+    if request.url.path.startswith(
+        "/auth/users"
+    ):
+        required_permission = "admin"
+    if (
+        required_permission
+        and user is not None
+        and not has_permission(
+            user,
+            required_permission
+        )
+    ):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": f"Role does not allow '{required_permission}'."
+            }
+        )
+
+    rate_allowed = True
+    if STORAGE_BACKEND in {
+        "sqlite",
+        "postgres"
+    }:
+        rate_allowed = allow_rate_limited_request(
+            client_host,
+            RATE_LIMIT_PER_MINUTE
+        )
+    else:
+        now = time.time()
+        bucket = RATE_BUCKETS.setdefault(
+            client_host,
+            []
+        )
+        RATE_BUCKETS[
+            client_host
+        ] = [
+            timestamp
+            for timestamp in bucket
+            if now - timestamp < 60
+        ]
+        rate_allowed = len(
+            RATE_BUCKETS[
+                client_host
+            ]
+        ) < RATE_LIMIT_PER_MINUTE
+        if rate_allowed:
+            RATE_BUCKETS[
+                client_host
+            ].append(
+                now
+            )
+
+    if not rate_allowed:
+
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": "HELIOS rate limit exceeded."
+            }
+        )
 
     response = await call_next(
         request
@@ -378,6 +763,10 @@ async def request_observability(
     response.headers["x-helios-duration-ms"] = str(
         duration_ms
     )
+    response.headers["x-content-type-options"] = "nosniff"
+    response.headers["x-frame-options"] = "DENY"
+    response.headers["referrer-policy"] = "no-referrer"
+    response.headers["x-helios-storage"] = STORAGE_BACKEND
 
     return response
 
@@ -469,6 +858,7 @@ def generate_cognitive_response(
     user_message,
     module="dashboard",
     agent="HELIOS",
+    mode="balanced",
     attachments=None
 ):
 
@@ -532,6 +922,12 @@ Active Module:
 
 Selected Agent:
 {agent}
+
+Conversation Mode:
+{mode}
+
+Mode Directive:
+{CONVERSATION_MODES.get(mode, CONVERSATION_MODES["balanced"])}
 
 Attachments:
 {attachment_context or "None"}
@@ -743,7 +1139,153 @@ async def health():
         },
 
         "sources":
-        source_stats()
+        source_stats(),
+
+        "execution":
+        execution_memory.execution_stats(),
+
+        "storage":
+        storage_status(),
+
+        "security":
+        {
+            "api_key_required": bool(
+                API_KEY
+            ),
+            "token_auth_enabled": bool(
+                os.getenv(
+                    "HELIOS_AUTH_SECRET",
+                    ""
+                ).strip()
+            ),
+            "rate_limit_per_minute": RATE_LIMIT_PER_MINUTE
+        }
+    }
+
+
+@app.get("/ready")
+
+async def readiness():
+
+    checks = {
+        "durable_storage": STORAGE_BACKEND in {
+            "sqlite",
+            "postgres"
+        },
+        "multi_worker_storage": STORAGE_BACKEND == "postgres",
+        "auth_secret": bool(
+            AUTH_SECRET
+        ),
+        "admin_password": bool(
+            os.getenv(
+                "HELIOS_ADMIN_PASSWORD",
+                ""
+            ).strip()
+        ),
+        "cors_restricted": "*" not in parse_csv_env(
+            "HELIOS_CORS_ORIGINS",
+            "http://localhost:3000"
+        ),
+        "voice_provider": bool(
+            os.getenv(
+                "OPENAI_API_KEY",
+                ""
+            ).strip()
+        )
+    }
+    required_checks = {
+        key: value
+        for key, value in checks.items()
+        if key != "voice_provider"
+    }
+    ready = all(
+        required_checks.values()
+    )
+    payload = {
+        "ready": ready,
+        "environment": ENVIRONMENT,
+        "checks": checks,
+        "optional": {
+            "voice_provider": checks["voice_provider"]
+        }
+    }
+    if not ready:
+        return JSONResponse(
+            status_code=503,
+            content=payload
+        )
+    return payload
+
+
+@app.post("/auth/login")
+
+async def login(
+    request: LoginRequest
+):
+
+    user = await run_in_threadpool(
+        authenticate_user,
+        request.username,
+        request.password
+    )
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid username or password."
+        )
+    try:
+        token = issue_token(
+            user
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=str(
+                error
+            )
+        ) from error
+    return {
+        "token": token,
+        "user": user
+    }
+
+
+@app.get("/auth/users")
+
+async def users():
+
+    return {
+        "users": [
+            public_user(
+                user
+            )
+            for user in load_users()
+        ]
+    }
+
+
+@app.post("/auth/users")
+
+async def add_user(
+    request: UserCreateRequest
+):
+
+    try:
+        user = await run_in_threadpool(
+            create_user,
+            request.username,
+            request.password,
+            request.role
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=str(
+                error
+            )
+        ) from error
+    return {
+        "user": user
     }
 
 
@@ -767,6 +1309,399 @@ async def mission_events(
         stats=mission_stats(),
         agents=agent_activity()
     )
+
+
+@app.get("/autonomy/runs")
+
+async def autonomous_runs(
+    limit: int = 20
+):
+
+    safe_limit = max(
+        1,
+        min(
+            limit,
+            100
+        )
+    )
+
+    return {
+        "runs": [
+            reconcile_run(
+                run["id"]
+            )
+            or run
+            for run in load_runs()[
+                -safe_limit:
+            ]
+        ]
+    }
+
+
+@app.post("/autonomy/runs", response_model=AutonomousRunResponse)
+
+async def create_autonomous_run(
+    request: AutonomousRunRequest
+):
+
+    run = await run_in_threadpool(
+        create_run,
+        request.objective
+    )
+    run = await run_in_threadpool(
+        queue_run,
+        run["id"]
+    )
+
+    return AutonomousRunResponse(
+        run=run
+    )
+
+
+@app.get("/autonomy/runs/{run_id}", response_model=AutonomousRunResponse)
+
+async def autonomous_run(
+    run_id: str
+):
+
+    run = await run_in_threadpool(
+        reconcile_run,
+        run_id
+    )
+
+    if not run:
+        raise HTTPException(
+            status_code=404,
+            detail="Autonomous run not found."
+        )
+
+    return AutonomousRunResponse(
+        run=run
+    )
+
+
+@app.post("/autonomy/runs/{run_id}/cancel", response_model=AutonomousRunResponse)
+
+async def cancel_autonomous_run(
+    run_id: str
+):
+
+    try:
+        run = await run_in_threadpool(
+            cancel_run,
+            run_id
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=404,
+            detail=str(
+                error
+            )
+        ) from error
+
+    return AutonomousRunResponse(
+        run=run
+    )
+
+
+@app.post("/autonomy/runs/{run_id}/resume", response_model=AutonomousRunResponse)
+
+async def resume_autonomous_run(
+    run_id: str
+):
+
+    run = await run_in_threadpool(
+        get_run,
+        run_id
+    )
+
+    if not run:
+        raise HTTPException(
+            status_code=404,
+            detail="Autonomous run not found."
+        )
+
+    run = await run_in_threadpool(
+        queue_run,
+        run_id
+    )
+
+    return AutonomousRunResponse(
+        run=run
+    )
+
+
+@app.get("/autonomy/jobs")
+
+async def autonomous_jobs(
+    limit: int = 50
+):
+
+    return {
+        "jobs": await run_in_threadpool(
+            list_jobs,
+            limit
+        )
+    }
+
+
+@app.get("/tools")
+
+async def tools_endpoint():
+
+    return {
+        "tools": [
+            {
+                "name": tool_name,
+                "status": "available"
+            }
+            for tool_name in list_tools()
+        ],
+        "stats": execution_memory.execution_stats()
+    }
+
+
+@app.post("/code/repair")
+
+async def code_repair(
+    request: CodeRepairRequest
+):
+
+    return await run_in_threadpool(
+        run_structured_code_repair,
+        request.objective,
+        request.edits,
+        request.verification_commands,
+        request.verification_attempts
+    )
+
+
+@app.post("/code/repair/auto")
+
+async def automatic_code_repair(
+    request: GeneralCodeRepairRequest
+):
+
+    return await run_in_threadpool(
+        run_general_code_repair,
+        request.objective,
+        request.target_files,
+        request.verification_commands,
+        request.repair_attempts
+    )
+
+
+@app.get("/git/status")
+
+async def git_status_endpoint():
+
+    return await run_in_threadpool(
+        git_status
+    )
+
+
+@app.post("/git/commit", response_model=GitCommitResponse)
+
+async def git_commit_endpoint(
+    request: GitCommitRequest
+):
+
+    return GitCommitResponse(
+        **await run_in_threadpool(
+            commit_staged_changes,
+            request.message,
+            request.confirm
+        )
+    )
+
+
+@app.get("/project/brain", response_model=ProjectBrainResponse)
+
+async def project_brain(
+    limit: int = 8
+):
+
+    safe_limit = max(
+        1,
+        min(
+            limit,
+            25
+        )
+    )
+
+    return ProjectBrainResponse(
+        **build_project_brain(
+            safe_limit
+        )
+    )
+
+
+@app.get("/observability", response_model=ObservabilityResponse)
+
+async def observability(
+    limit: int = 100
+):
+
+    safe_limit = max(
+        1,
+        min(
+            limit,
+            500
+        )
+    )
+
+    return ObservabilityResponse(
+        **build_observability_report(
+            safe_limit
+        )
+    )
+
+
+@app.get("/metrics")
+
+async def metrics():
+
+    report = build_observability_report()
+    rates = report.get(
+        "rates",
+        {}
+    )
+    stats = report.get(
+        "stats",
+        {}
+    )
+    lines = [
+        "# HELP helios_requests_total Total HTTP requests handled.",
+        "# TYPE helios_requests_total counter",
+        f"helios_requests_total {REQUEST_COUNT}",
+        "# HELP helios_tool_events_total Total recorded tool events.",
+        "# TYPE helios_tool_events_total gauge",
+        f"helios_tool_events_total {stats.get('tool_events', 0)}",
+        "# HELP helios_tool_failure_rate Tool failure rate in the active window.",
+        "# TYPE helios_tool_failure_rate gauge",
+        f"helios_tool_failure_rate {rates.get('failure_rate', 0)}",
+    ]
+    return Response(
+        content="\n".join(
+            lines
+        )
+        + "\n",
+        media_type="text/plain; version=0.0.4"
+    )
+
+
+@app.get("/execution/events", response_model=ExecutionEventsResponse)
+
+async def execution_events(
+    limit: int = 25,
+    status: str | None = None,
+    event_type: str | None = None
+):
+
+    return ExecutionEventsResponse(
+        events=execution_memory.get_execution_events(
+            limit=limit,
+            status=status,
+            event_type=event_type
+        ),
+        stats=execution_memory.execution_stats()
+    )
+
+
+@app.post("/tools/execute", response_model=ToolExecuteResponse)
+
+async def execute_tool_endpoint(
+    request: ToolExecuteRequest
+):
+
+    module = request.module.strip().lower()
+
+    if module not in ALLOWED_MODULES:
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported HELIOS module: {module}"
+        )
+
+    before_count = len(
+        execution_memory.load_execution_memory()
+    )
+
+    try:
+
+        if request.agent:
+
+            result = await run_in_threadpool(
+                execute_agent_tool,
+                request.agent.strip().lower(),
+                request.tool,
+                *request.args,
+                retries=request.retries,
+                **request.kwargs
+            )
+
+        else:
+
+            result = await run_in_threadpool(
+                execute_tool,
+                request.tool,
+                *request.args,
+                actor="HELIOS Dashboard",
+                module=module,
+                retries=request.retries,
+                metadata={
+                    "source": "api"
+                },
+                **request.kwargs
+            )
+
+        events = execution_memory.load_execution_memory()[
+            before_count:
+        ]
+
+        status = "success"
+
+        for event in reversed(
+            events
+        ):
+            if event.get(
+                "tool"
+            ) == request.tool and event.get(
+                "status"
+            ) in {
+                "success",
+                "failed",
+                "blocked"
+            }:
+                status = event.get(
+                    "status",
+                    status
+                )
+                break
+
+        return ToolExecuteResponse(
+            tool=request.tool,
+            status=status,
+            result=result,
+            events=events,
+            stats=execution_memory.execution_stats()
+        )
+
+    except Exception as error:
+
+        events = execution_memory.load_execution_memory()[
+            before_count:
+        ]
+
+        return ToolExecuteResponse(
+            tool=request.tool,
+            status="failed",
+            error=str(
+                error
+            ),
+            events=events,
+            stats=execution_memory.execution_stats()
+        )
 
 
 @app.post("/missions", response_model=MissionResponse)
@@ -936,6 +1871,45 @@ async def source_search(
     )
 
 
+@app.get("/sources/intelligence", response_model=SourceIntelligenceResponse)
+
+async def source_intelligence(
+    q: str = "",
+    limit: int = 8,
+    scope: str | None = None
+):
+
+    safe_limit = max(
+        1,
+        min(
+            limit,
+            25
+        )
+    )
+    sources = search_sources(
+        q,
+        limit=safe_limit,
+        scope=scope
+    )
+    stats = source_stats()
+    grounding = build_grounded_research_artifact(
+        q,
+        sources,
+        stats
+    )
+
+    return SourceIntelligenceResponse(
+        query=q,
+        sources=sources,
+        citations=grounding["citations"],
+        claims=grounding["claims"],
+        grounded_answer=grounding["grounded_answer"],
+        coverage=grounding["coverage"],
+        stats=stats,
+        graph=grounding["graph"]
+    )
+
+
 @app.post("/sources", response_model=SourceResponse)
 
 async def save_source(
@@ -985,12 +1959,53 @@ async def chat(
 
     request.module = request.module.strip().lower()
     request.agent = request.agent.strip() or "HELIOS"
+    request.mode = request.mode.strip().lower()
 
     if request.module not in ALLOWED_MODULES:
 
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported HELIOS module: {request.module}"
+        )
+
+    if request.mode not in CONVERSATION_MODES:
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported conversation mode: {request.mode}"
+        )
+
+    if request.module == "research":
+        evidence = await run_in_threadpool(
+            search_sources,
+            request.message,
+            8
+        )
+        grounding = build_grounded_research_artifact(
+            request.message,
+            evidence,
+            source_stats()
+        )
+        return ChatResponse(
+            response=grounding["grounded_answer"],
+            module=request.module,
+            agent=request.agent,
+            mode=request.mode,
+            trace=[
+                {
+                    "stage": "grounding",
+                    "actor": "Nova",
+                    "payload": grounding["coverage"]
+                }
+            ],
+            plan=[
+                {
+                    "agent": "research",
+                    "objective": "Answer only from indexed evidence."
+                }
+            ],
+            citations=grounding["citations"],
+            grounded=grounding["coverage"]["grounded"]
         )
 
     if (
@@ -1028,6 +2043,7 @@ async def chat(
             response=clean_response(response),
             module=request.module,
             agent=request.agent,
+            mode=request.mode,
             trace=[
                 {
                     "stage": "response",
@@ -1050,6 +2066,7 @@ async def chat(
         request.message,
         request.module,
         request.agent,
+        request.mode,
         request.attachments
     )
 
@@ -1069,8 +2086,32 @@ async def chat(
         response=clean_response(response),
         module=request.module,
         agent=request.agent,
+        mode=request.mode,
         trace=status.get("trace", []),
         plan=status.get("plan", [])
+    )
+
+
+@app.get("/voice/status", response_model=VoiceStatusResponse)
+
+async def voice_status():
+
+    key_configured = bool(
+        os.getenv(
+            "OPENAI_API_KEY",
+            ""
+        ).strip()
+    )
+
+    return VoiceStatusResponse(
+        realtime_available=key_configured,
+        openai_key_configured=key_configured,
+        model=OPENAI_REALTIME_MODEL,
+        voice=OPENAI_REALTIME_VOICE,
+        max_offer_bytes=MAX_REALTIME_OFFER_BYTES,
+        status="ready"
+        if key_configured
+        else "missing_openai_key"
     )
 
 
@@ -1099,6 +2140,27 @@ async def create_realtime_session(
         raise HTTPException(
             status_code=400,
             detail="Missing WebRTC offer SDP."
+        )
+
+    if len(
+        offer_sdp
+    ) > MAX_REALTIME_OFFER_BYTES:
+
+        raise HTTPException(
+            status_code=413,
+            detail="Realtime offer SDP is too large."
+        )
+
+    offer_text = offer_sdp.decode(
+        "utf-8",
+        errors="ignore"
+    )
+
+    if "v=0" not in offer_text:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid WebRTC offer SDP."
         )
 
     session_config = {
@@ -1130,10 +2192,7 @@ async def create_realtime_session(
                 files={
                     "sdp": (
                         None,
-                        offer_sdp.decode(
-                            "utf-8",
-                            errors="ignore"
-                        )
+                        offer_text
                     ),
                     "session": (
                         None,

@@ -17,6 +17,7 @@ type ModuleKey =
   | "knowledge";
 
 type Role = "user" | "assistant";
+type ConversationMode = "balanced" | "concise" | "deep" | "execute";
 
 type Attachment = {
   id: number;
@@ -55,9 +56,17 @@ type RunLedgerEvent = {
   label: string;
   actor?: string;
   module?: string;
+  tool?: string;
   status?: string;
   detail?: string;
+  error?: string;
+  input?: unknown;
+  result?: unknown;
+  parent_id?: string;
+  metadata?: Record<string, unknown>;
   timestamp?: string;
+  duration_ms?: number;
+  attempt?: number;
 };
 
 type VoiceState = "idle" | "connecting" | "listening" | "speaking" | "error";
@@ -110,12 +119,20 @@ type HealthStatus = {
     active_events?: number;
     agents?: AgentActivityMap;
   };
+  execution?: {
+    total_events?: number;
+    tool_events?: number;
+    successful_tools?: number;
+    failed_tools?: number;
+    blocked_tools?: number;
+  };
 };
 
 type ChatResult = {
   response?: string;
   module?: string;
   agent?: string;
+  mode?: ConversationMode;
   trace?: CognitiveTrace[];
   plan?: PlanStep[];
 };
@@ -127,6 +144,84 @@ type SourcesResult = {
     indexed_sources?: number;
     pending_sources?: number;
   };
+};
+
+type SourceIntelligenceResult = {
+  query?: string;
+  sources?: KnowledgeSource[];
+  citations?: Array<{
+    id?: string;
+    name?: string;
+    scope?: string;
+    snippet?: string;
+    match_terms?: string[];
+    confidence?: number;
+  }>;
+  claims?: Array<{
+    claim?: string;
+    citations?: string[];
+    source?: string;
+  }>;
+  grounded_answer?: string;
+  coverage?: {
+    query_terms?: string[];
+    matched_terms?: string[];
+    unmatched_terms?: string[];
+    citation_count?: number;
+    grounded?: boolean;
+  };
+};
+
+type ProjectBrainResult = {
+  nodes?: Array<{
+    id?: string;
+    label?: string;
+    kind?: string;
+    weight?: number;
+    detail?: string;
+  }>;
+  links?: Array<{
+    from?: string;
+    to?: string;
+    label?: string;
+  }>;
+  stats?: Record<string, unknown>;
+  summary?: {
+    total_nodes?: number;
+    total_links?: number;
+    health?: string;
+  };
+};
+
+type ObservabilityResult = {
+  stats?: Record<string, number>;
+  window?: {
+    events_analyzed?: number;
+    completed_events?: number;
+  };
+  rates?: {
+    failure_rate?: number;
+    average_duration_ms?: number;
+    max_duration_ms?: number;
+  };
+  tool_counts?: Record<string, number>;
+  status_counts?: Record<string, number>;
+  slow_tools?: Array<{
+    tool?: string;
+    average_duration_ms?: number;
+    max_duration_ms?: number;
+    samples?: number;
+  }>;
+  recent_failures?: RunLedgerEvent[];
+  recommendations?: string[];
+};
+
+type VoiceStatusResult = {
+  realtime_available?: boolean;
+  openai_key_configured?: boolean;
+  model?: string;
+  voice?: string;
+  status?: string;
 };
 
 type MissionEvent = {
@@ -160,6 +255,17 @@ type MissionEventsResult = {
   agents?: AgentActivityMap;
 };
 
+type ExecutionEventsResult = {
+  events?: RunLedgerEvent[];
+  stats?: {
+    total_events?: number;
+    tool_events?: number;
+    successful_tools?: number;
+    failed_tools?: number;
+    blocked_tools?: number;
+  };
+};
+
 type MissionSummary = {
   id: string;
   title: string;
@@ -175,18 +281,64 @@ type MissionArtifact = {
   kind?: string;
   summary?: string;
   evidence?: Array<{
+    id?: string;
     name?: string;
     scope?: string;
     snippet?: string;
     match_terms?: string[];
   }>;
+  citations?: Array<{
+    id?: string;
+    name?: string;
+    scope?: string;
+    snippet?: string;
+    match_terms?: string[];
+    confidence?: number;
+  }>;
+  claims?: Array<{
+    claim?: string;
+    citations?: string[];
+    source?: string;
+  }>;
+  grounded_answer?: string;
   steps?: string[];
   checks?: string[];
+  execution?: {
+    mode?: string;
+    edits?: Array<{
+      tool?: string;
+      path?: string;
+      status?: string;
+      result?: string;
+      error?: string;
+    }>;
+    verification?: Array<{
+      label?: string;
+      command?: string;
+      status?: string;
+      return_code?: number | null;
+      output?: string;
+    }>;
+    blockers?: string[];
+    commit_ready?: boolean;
+    summary?: string;
+  };
   assignments?: Array<{
     agent?: string;
     objective?: string;
     priority?: number;
   }>;
+  debate?: Array<{
+    agent?: string;
+    proposal?: string;
+    critiques?: string[];
+  }>;
+  consensus?: {
+    confidence?: number;
+    active_focus?: string[];
+    failed_agents?: string[];
+    consensus_steps?: string[];
+  };
   target_files?: string[];
   file_signals?: Array<{
     path?: string;
@@ -525,6 +677,7 @@ const modules: ModuleConfig[] = [
 ];
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_HELIOS_API_URL ?? "http://localhost:8000";
+const HELIOS_API_KEY = process.env.NEXT_PUBLIC_HELIOS_API_KEY ?? "";
 const websocketBaseUrl = API_BASE_URL.startsWith("https://")
   ? `wss://${API_BASE_URL.slice("https://".length)}`
   : API_BASE_URL.startsWith("http://")
@@ -570,14 +723,29 @@ const agents = [
   },
 ];
 
-const quickActions = [
-  "Create Mission",
-  "Launch Research",
-  "Activate Swarm",
-  "Inspect Memory",
-  "Open Voice Room",
-  "Upload source",
-  "Export thread",
+type CommandDefinition = {
+  id: string;
+  label: string;
+  category: string;
+  detail: string;
+  keywords: string[];
+};
+
+const launcherCommands: CommandDefinition[] = [
+  { id: "mission:create", label: "Create Mission", category: "Mission", detail: "Open mission composer with the active module and agent.", keywords: ["new", "task", "objective"] },
+  { id: "mission:run", label: "Run Active Mission", category: "Mission", detail: "Execute the currently selected mission workflow.", keywords: ["execute", "workflow", "run"] },
+  { id: "mission:research", label: "Launch Research Mission", category: "Research", detail: "Create and open a source-grounded research mission.", keywords: ["sources", "citations", "nova"] },
+  { id: "mission:code", label: "Launch Code Mission", category: "Code", detail: "Create and open a bounded code-agent workflow.", keywords: ["patch", "test", "vega"] },
+  { id: "source:intel", label: "Refresh Source Intelligence", category: "Knowledge", detail: "Query citations and unsupported terms for the current mission.", keywords: ["citations", "evidence", "sources"] },
+  { id: "tool:status", label: "Run Git Status", category: "Tools", detail: "Execute safe git status through the backend tool ledger.", keywords: ["tool", "ledger", "git"] },
+  { id: "tool:execute", label: "Execute Registered Tool", category: "Tools", detail: "Run a registered tool using: tool_name [JSON args array].", keywords: ["tool", "execute", "terminal", "file", "python"] },
+  { id: "git:preview", label: "Preview Git Commit", category: "Git", detail: "Inspect staged files and proposed commit message.", keywords: ["commit", "staged", "preview"] },
+  { id: "git:commit", label: "Commit Staged Changes", category: "Git", detail: "Commit already-staged files using the typed command text as message.", keywords: ["commit", "checkpoint", "staged"] },
+  { id: "open:swarm", label: "Activate Swarm", category: "Workspace", detail: "Open the swarm coordination surface.", keywords: ["agents", "collab"] },
+  { id: "open:memory", label: "Inspect Memory", category: "Workspace", detail: "Open scoped memory drawer.", keywords: ["brain", "memory"] },
+  { id: "open:voice", label: "Open Voice Room", category: "Workspace", detail: "Switch to realtime voice workspace.", keywords: ["speak", "audio"] },
+  { id: "source:upload", label: "Upload Source", category: "Knowledge", detail: "Open source upload flow.", keywords: ["file", "index"] },
+  { id: "thread:export", label: "Export Thread", category: "Session", detail: "Download the current chat transcript.", keywords: ["download", "save"] },
 ];
 
 const initialMessages: Message[] = [
@@ -643,10 +811,14 @@ function formatFileSize(size: number) {
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  const headers = new Headers(init.headers);
+
+  if (HELIOS_API_KEY) headers.set("x-helios-api-key", HELIOS_API_KEY);
 
   try {
     return await fetch(input, {
       ...init,
+      headers,
       signal: init.signal ?? controller.signal,
     });
   } finally {
@@ -658,9 +830,17 @@ function normalizeRunLedgerEvent(payload: Record<string, unknown>, fallbackDetai
   const labelValue = payload.label ?? payload.action ?? payload.stage ?? payload.type;
   const actorValue = payload.actor ?? payload.agent ?? payload.owner;
   const moduleValue = payload.module ?? payload.scope;
+  const toolValue = payload.tool;
   const statusValue = payload.status ?? payload.state ?? payload.result;
   const detailValue = payload.detail ?? payload.summary ?? payload.message ?? fallbackDetail;
+  const errorValue = payload.error;
+  const inputValue = payload.input;
+  const resultValue = payload.result;
+  const parentValue = payload.parent_id;
+  const metadataValue = payload.metadata;
   const timestampValue = payload.timestamp ?? payload.time ?? payload.at;
+  const durationValue = payload.duration_ms;
+  const attemptValue = payload.attempt;
   const idValue = payload.id ?? payload.event_id ?? payload.run_id;
   const id =
     typeof idValue === "string"
@@ -674,9 +854,17 @@ function normalizeRunLedgerEvent(payload: Record<string, unknown>, fallbackDetai
     label: typeof labelValue === "string" && labelValue.trim().length > 0 ? labelValue : "Run event",
     actor: actorValue ? String(actorValue) : undefined,
     module: moduleValue ? String(moduleValue) : undefined,
+    tool: toolValue ? String(toolValue) : undefined,
     status: statusValue ? String(statusValue) : undefined,
     detail: detailValue ? String(detailValue) : undefined,
+    error: errorValue ? String(errorValue) : undefined,
+    input: inputValue,
+    result: resultValue,
+    parent_id: parentValue ? String(parentValue) : undefined,
+    metadata: metadataValue && typeof metadataValue === "object" ? metadataValue as Record<string, unknown> : undefined,
     timestamp: timestampValue ? String(timestampValue) : undefined,
+    duration_ms: typeof durationValue === "number" ? durationValue : undefined,
+    attempt: typeof attemptValue === "number" ? attemptValue : undefined,
   };
 }
 
@@ -705,6 +893,7 @@ export default function Home() {
   const [activeModule, setActiveModule] = useState<ModuleKey>("dashboard");
   const [activeTab, setActiveTab] = useState("Overview");
   const [activeAgent, setActiveAgent] = useState(agents[0].name);
+  const [conversationMode, setConversationMode] = useState<ConversationMode>("balanced");
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -717,8 +906,12 @@ export default function Home() {
   const [isCreatingMission, setIsCreatingMission] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [deployOpen, setDeployOpen] = useState(false);
+  const [executionOpen, setExecutionOpen] = useState(false);
+  const [selectedExecutionId, setSelectedExecutionId] = useState<string | null>(null);
   const [focusMode, setFocusMode] = useState(false);
   const [commandQuery, setCommandQuery] = useState("");
+  const [commandStatus, setCommandStatus] = useState("");
+  const [runningCommandId, setRunningCommandId] = useState<string | null>(null);
   const [runtimeState, setRuntimeState] = useState<RuntimeState>("checking");
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [lastTrace, setLastTrace] = useState<CognitiveTrace[]>([]);
@@ -734,6 +927,10 @@ export default function Home() {
   const [missionTask, setMissionTask] = useState<MissionRunResult["task"] | null>(null);
   const [agentActivity, setAgentActivity] = useState<AgentActivityMap>({});
   const [indexedSources, setIndexedSources] = useState<KnowledgeSource[]>([]);
+  const [sourceIntel, setSourceIntel] = useState<SourceIntelligenceResult | null>(null);
+  const [projectBrain, setProjectBrain] = useState<ProjectBrainResult | null>(null);
+  const [observability, setObservability] = useState<ObservabilityResult | null>(null);
+  const [voiceStatusInfo, setVoiceStatusInfo] = useState<VoiceStatusResult | null>(null);
   const idRef = useRef(10);
   const generationRef = useRef<number | null>(null);
   const requestRef = useRef<AbortController | null>(null);
@@ -758,9 +955,13 @@ export default function Home() {
         `${item.title} ${item.eyebrow} ${item.description}`.toLowerCase().includes(normalizedCommandQuery),
       )
     : modules;
-  const filteredQuickActions = normalizedCommandQuery
-    ? quickActions.filter((action) => action.toLowerCase().includes(normalizedCommandQuery))
-    : quickActions;
+  const filteredCommands = normalizedCommandQuery
+    ? launcherCommands.filter((command) =>
+        `${command.label} ${command.category} ${command.detail} ${command.keywords.join(" ")}`
+          .toLowerCase()
+          .includes(normalizedCommandQuery),
+      )
+    : launcherCommands;
   const aiStatus = health?.ai?.status ?? "unknown";
   const modelName = health?.ai?.model ?? "qwen2.5:3b";
   const memoryStats = health?.cognitive_engine?.memory;
@@ -794,7 +995,7 @@ export default function Home() {
     { label: "Backend", value: runtimeState === "online" ? "Online" : runtimeState === "checking" ? "Checking" : "Issue", tone: runtimeState === "online" ? "green" : "amber" },
     { label: "Model", value: health?.ai?.model_available ? "Ready" : "Check", tone: health?.ai?.model_available ? "green" : "amber" },
     { label: "Memory", value: String(memoryTotal), tone: "blue" },
-    { label: "Last Trace", value: String(lastTrace.length), tone: "violet" },
+    { label: "Tool Events", value: String(health?.execution?.tool_events ?? runLedger.filter((event) => event.tool).length), tone: "violet" },
   ];
   const displayedStats = activeModule === "dashboard" || activeModule === "analytics" ? liveMetrics : activeModuleConfig.stats;
   const traceEvents: CognitiveTrace[] =
@@ -824,7 +1025,11 @@ export default function Home() {
         : runLedgerStatus === "error"
           ? "Error"
           : "Offline";
-  const runLedgerEntries = runLedger.slice(0, 6);
+  const runLedgerEntries = runLedger.slice(0, 8);
+  const selectedExecution =
+    runLedger.find((event) => event.id === selectedExecutionId) ??
+    runLedger[0] ??
+    null;
   const intelligenceStatus = isGenerating
     ? attachments.length > 0
       ? "Synthesizing"
@@ -868,15 +1073,72 @@ export default function Home() {
           .reverse()
           .find((event) => event.artifact?.kind === "research")
           ?.artifact ?? null;
+  const researchCitations = researchArtifact?.citations ?? sourceIntel?.citations ?? [];
+  const researchClaims = researchArtifact?.claims ?? sourceIntel?.claims ?? [];
+  const researchCoverage = researchArtifact?.coverage ?? sourceIntel?.coverage ?? null;
+  const researchIsGrounded = Boolean((researchCoverage as { grounded?: unknown } | null)?.grounded);
+  const researchUnsupportedTerms = Array.isArray((researchCoverage as { unmatched_terms?: unknown } | null)?.unmatched_terms)
+    ? ((researchCoverage as { unmatched_terms?: string[] }).unmatched_terms ?? [])
+    : [];
+  const researchGroundedAnswer = researchArtifact?.grounded_answer ?? sourceIntel?.grounded_answer;
   const researchEvidence =
     researchArtifact?.evidence && researchArtifact.evidence.length > 0
       ? researchArtifact.evidence
+      : sourceIntel?.sources && sourceIntel.sources.length > 0
+        ? sourceIntel.sources.map((source) => ({
+            id: String(source.id),
+            name: source.name,
+            scope: source.scope,
+            snippet: source.content ?? source.status ?? "Indexed source signal.",
+            match_terms: [],
+          }))
       : sources.slice(0, 5).map((source) => ({
           name: source.name,
           scope: "scope" in source ? source.scope : "session",
           snippet: source.content ?? source.status ?? "Indexed source signal.",
           match_terms: [],
         }));
+  const codeArtifact =
+    latestArtifact?.kind === "code"
+      ? latestArtifact
+      : missionEvents
+          .slice()
+          .reverse()
+          .find((event) => event.artifact?.kind === "code")
+          ?.artifact ?? null;
+  const codeTargetRows =
+    codeArtifact?.file_signals && codeArtifact.file_signals.length > 0
+      ? codeArtifact.file_signals.map((file) => ({
+          path: file.path ?? "unknown",
+          signal: file.matched_terms?.length ? `${file.matched_terms.length} matched terms` : file.extension ?? "signal",
+          risk: file.line_count && file.line_count > 400 ? "High" : file.line_count && file.line_count > 160 ? "Medium" : "Low",
+        }))
+      : codeFiles;
+  const codeVerificationRows =
+    codeArtifact?.execution?.verification && codeArtifact.execution.verification.length > 0
+      ? codeArtifact.execution.verification
+      : [{ label: "Ledger", command: "Run a Code mission", status: "waiting", output: "Verification results will appear here." }];
+  const codeEditRows = codeArtifact?.execution?.edits ?? [];
+  const codePatchRows =
+    codeEditRows.length > 0
+      ? codeEditRows.map((edit) => ({
+          label: edit.path?.split("/").pop() ?? edit.tool ?? "edit",
+          status: edit.status ?? "applied",
+          key: `${edit.tool ?? "edit"}-${edit.path ?? edit.status ?? "row"}`,
+        }))
+      : codeTargetRows.map((file) => ({
+          label: file.path.split("/").pop() ?? file.path,
+          status: file.risk,
+          key: file.path,
+        }));
+  const swarmArtifact =
+    latestArtifact?.kind === "swarm"
+      ? latestArtifact
+      : missionEvents
+          .slice()
+          .reverse()
+          .find((event) => event.artifact?.kind === "swarm")
+          ?.artifact ?? null;
   const artifactHighlights = [
     ...(latestArtifact?.target_files ?? []).slice(0, 4).map((path) => ({
       label: "File",
@@ -908,7 +1170,7 @@ export default function Home() {
   const telemetryPoints = Array.from({ length: 18 }, (_, index) => {
     const anomaly = index === 5 || index === 13;
     const height = 24 + ((index * 17 + runtimeTick * 7) % 64) + (anomaly ? 34 : 0);
-    const stamp = `${String((new Date().getHours() + 23) % 24).padStart(2, "0")}:${String((new Date().getMinutes() + index) % 60).padStart(2, "0")}`;
+    const stamp = `T+${String(index).padStart(2, "0")}m`;
     return { height: Math.min(height, 118), anomaly, stamp };
   });
 
@@ -1013,18 +1275,117 @@ export default function Home() {
       }
     };
 
+    const loadExecutionEvents = async () => {
+      try {
+        const result = await fetchWithTimeout(`${API_BASE_URL}/execution/events?limit=40&event_type=tool_event`, {
+          cache: "no-store",
+        });
+
+        if (!result.ok) return;
+
+        const data = (await result.json()) as ExecutionEventsResult;
+
+        if (!active) return;
+
+        const events = (data.events ?? [])
+          .map((event) => normalizeRunLedgerEvent(event as unknown as Record<string, unknown>))
+          .reverse();
+
+        setRunLedger((current) => {
+          const merged = [...events, ...current];
+          const seen = new Set<string>();
+
+          return merged
+            .filter((event) => {
+              if (seen.has(event.id)) return false;
+              seen.add(event.id);
+              return true;
+            })
+            .slice(0, RUN_LEDGER_MAX_ENTRIES);
+        });
+      } catch {
+        return;
+      }
+    };
+
+    const loadProjectBrain = async () => {
+      try {
+        const result = await fetchWithTimeout(`${API_BASE_URL}/project/brain?limit=8`, {
+          cache: "no-store",
+        });
+
+        if (!result.ok) return;
+
+        const data = (await result.json()) as ProjectBrainResult;
+
+        if (!active) return;
+
+        setProjectBrain(data);
+      } catch {
+        return;
+      }
+    };
+
+    const loadObservability = async () => {
+      try {
+        const result = await fetchWithTimeout(`${API_BASE_URL}/observability?limit=120`, {
+          cache: "no-store",
+        });
+
+        if (!result.ok) return;
+
+        const data = (await result.json()) as ObservabilityResult;
+
+        if (!active) return;
+
+        setObservability(data);
+      } catch {
+        return;
+      }
+    };
+
+    const loadVoiceStatus = async () => {
+      try {
+        const result = await fetchWithTimeout(`${API_BASE_URL}/voice/status`, {
+          cache: "no-store",
+        });
+
+        if (!result.ok) return;
+
+        const data = (await result.json()) as VoiceStatusResult;
+
+        if (!active) return;
+
+        setVoiceStatusInfo(data);
+      } catch {
+        return;
+      }
+    };
+
     void loadHealth();
     void loadSources();
     void loadMissionEvents();
+    void loadExecutionEvents();
+    void loadProjectBrain();
+    void loadObservability();
+    void loadVoiceStatus();
     const timer = window.setInterval(loadHealth, 10000);
     const sourceTimer = window.setInterval(loadSources, 15000);
     const missionTimer = window.setInterval(loadMissionEvents, 12000);
+    const executionTimer = window.setInterval(loadExecutionEvents, 8000);
+    const brainTimer = window.setInterval(loadProjectBrain, 12000);
+    const observabilityTimer = window.setInterval(loadObservability, 10000);
+    const voiceTimer = window.setInterval(loadVoiceStatus, 20000);
 
     return () => {
       active = false;
       window.clearInterval(timer);
       window.clearInterval(sourceTimer);
       window.clearInterval(missionTimer);
+      window.clearInterval(executionTimer);
+      window.clearInterval(brainTimer);
+      window.clearInterval(observabilityTimer);
+      window.clearInterval(voiceTimer);
     };
   }, []);
 
@@ -1040,6 +1401,41 @@ export default function Home() {
 
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    const query = activeMission?.title ?? activeModuleConfig.title;
+
+    const loadSourceIntelligence = async () => {
+      if (activeModule !== "research" && activeModule !== "knowledge") return;
+
+      try {
+        const params = new URLSearchParams({
+          q: query,
+          limit: "8",
+        });
+        const result = await fetchWithTimeout(`${API_BASE_URL}/sources/intelligence?${params.toString()}`, {
+          cache: "no-store",
+        });
+
+        if (!result.ok) return;
+
+        const data = (await result.json()) as SourceIntelligenceResult;
+
+        if (!active) return;
+
+        setSourceIntel(data);
+      } catch {
+        return;
+      }
+    };
+
+    void loadSourceIntelligence();
+
+    return () => {
+      active = false;
+    };
+  }, [activeModule, activeModuleConfig.title, activeMission?.title, indexedSources.length]);
 
   useEffect(() => {
     return () => stopRealtimeVoice();
@@ -1231,29 +1627,15 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
-  const runQuickAction = (action: string) => {
-    if (action === "Create Mission") {
-      stopGeneration();
-      setMessages(initialMessages);
-      setInput("");
-      setAttachments([]);
-      setMissionTitle("");
-      setMissionModule(activeModule);
-      setMissionAgent(selectedAgent.name);
-      setMissionOpen(true);
-    }
-
-    if (action === "Launch Research") switchModule("research");
-    if (action === "Activate Swarm") switchModule("swarm");
-    if (action === "Inspect Memory") setMemoryOpen(true);
-    if (action === "Open Voice Room") switchModule("voice");
-    if (action === "Upload source") {
-      switchModule("knowledge");
-      fileInputRef.current?.click();
-    }
-
-    if (action === "Export thread") exportThread();
-    setCommandOpen(false);
+  const openMissionComposer = (module = activeModule, agent = selectedAgent.name, title = "") => {
+    stopGeneration();
+    setMessages(initialMessages);
+    setInput("");
+    setAttachments([]);
+    setMissionTitle(title);
+    setMissionModule(module);
+    setMissionAgent(agent);
+    setMissionOpen(true);
   };
 
   const createMission = async (title = missionTitle, module = missionModule, agent = missionAgent) => {
@@ -1267,6 +1649,7 @@ export default function Home() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...(HELIOS_API_KEY ? { "x-helios-api-key": HELIOS_API_KEY } : {}),
         },
         body: JSON.stringify({
           title: cleanTitle,
@@ -1325,6 +1708,7 @@ export default function Home() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...(HELIOS_API_KEY ? { "x-helios-api-key": HELIOS_API_KEY } : {}),
         },
         body: JSON.stringify({
           stage,
@@ -1380,6 +1764,183 @@ export default function Home() {
     }
   };
 
+  const runLauncherCommand = async (command: CommandDefinition) => {
+    if (runningCommandId) return;
+
+    setRunningCommandId(command.id);
+    setCommandStatus(`Running ${command.label}...`);
+
+    try {
+      if (command.id === "mission:create") {
+        openMissionComposer();
+        setCommandStatus("Mission composer opened.");
+        setCommandOpen(false);
+        return;
+      }
+
+      if (command.id === "mission:run") {
+        await runMissionWorkflow();
+        setCommandStatus("Mission workflow triggered.");
+        setCommandOpen(false);
+        return;
+      }
+
+      if (command.id === "mission:research") {
+        const title = commandQuery.trim() || "Source-grounded research mission";
+        await createMission(title, "research", "Nova");
+        setCommandStatus("Research mission created.");
+        setCommandOpen(false);
+        return;
+      }
+
+      if (command.id === "mission:code") {
+        const title = commandQuery.trim() || "Run bounded code verification";
+        await createMission(title, "code", "Vega");
+        setCommandStatus("Code mission created.");
+        setCommandOpen(false);
+        return;
+      }
+
+      if (command.id === "source:intel") {
+        const query = activeMission?.title || commandQuery.trim() || activeModuleConfig.title;
+        const params = new URLSearchParams({
+          q: query,
+          limit: "8",
+        });
+        const result = await fetchWithTimeout(`${API_BASE_URL}/sources/intelligence?${params.toString()}`, {
+          cache: "no-store",
+        });
+
+        if (!result.ok) throw new Error(`Source intelligence returned ${result.status}`);
+
+        const data = (await result.json()) as SourceIntelligenceResult;
+
+        setSourceIntel(data);
+        switchModule("research");
+        setCommandStatus(`Source intelligence loaded: ${data.citations?.length ?? 0} citation(s).`);
+        setCommandOpen(false);
+        return;
+      }
+
+      if (command.id === "tool:status") {
+        const result = await fetchWithTimeout(`${API_BASE_URL}/tools/execute`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            tool: "run_command",
+            args: ["git status --short"],
+            module: "dashboard",
+          }),
+        });
+
+        if (!result.ok) throw new Error(`Tool execution returned ${result.status}`);
+
+        const data = (await result.json()) as { events?: RunLedgerEvent[]; status?: string };
+        const events = (data.events ?? []).map((event) => normalizeRunLedgerEvent(event as unknown as Record<string, unknown>));
+
+        setRunLedger((current) => [...events.reverse(), ...current].slice(0, RUN_LEDGER_MAX_ENTRIES));
+        setCommandStatus(`Git status ${data.status ?? "completed"}.`);
+        setCommandOpen(false);
+        return;
+      }
+
+      if (command.id === "tool:execute") {
+        const [toolName, ...rawArgs] = commandQuery.trim().split(/\s+/);
+        if (!toolName) throw new Error("Enter a tool name and optional JSON args array.");
+        const argsText = rawArgs.join(" ").trim();
+        const args = argsText ? JSON.parse(argsText) : [];
+        if (!Array.isArray(args)) throw new Error("Tool arguments must be a JSON array.");
+        const result = await fetchWithTimeout(`${API_BASE_URL}/tools/execute`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            tool: toolName,
+            args,
+            module: activeModule,
+          }),
+        });
+        if (!result.ok) throw new Error(`Tool execution returned ${result.status}`);
+        const data = (await result.json()) as { events?: RunLedgerEvent[]; status?: string };
+        const events = (data.events ?? []).map((event) => normalizeRunLedgerEvent(event as unknown as Record<string, unknown>));
+        setRunLedger((current) => [...events.reverse(), ...current].slice(0, RUN_LEDGER_MAX_ENTRIES));
+        setCommandStatus(`${toolName} ${data.status ?? "completed"}.`);
+        setCommandOpen(false);
+        return;
+      }
+
+      if (command.id === "git:preview" || command.id === "git:commit") {
+        const message = commandQuery.trim() || "HELIOS checkpoint";
+        const result = await fetchWithTimeout(`${API_BASE_URL}/git/commit`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            message,
+            confirm: command.id === "git:commit",
+          }),
+        });
+
+        if (!result.ok) throw new Error(`Git commit flow returned ${result.status}`);
+
+        const data = (await result.json()) as {
+          status?: string;
+          reason?: string;
+          stdout?: string;
+          stderr?: string;
+          git?: {
+            staged?: string[];
+            changed?: string[];
+          };
+        };
+
+        const stagedCount = data.git?.staged?.length ?? 0;
+        setCommandStatus(
+          data.status === "success"
+            ? data.stdout || "Commit completed."
+            : `${data.status ?? "preview"}: ${data.reason ?? `${stagedCount} staged file(s).`}`,
+        );
+        setRunLedger((current) => [
+          {
+            id: `${Date.now()}-git-${command.id}`,
+            label: command.label,
+            actor: "HELIOS Git",
+            module: "code",
+            tool: "git",
+            status: data.status,
+            detail: data.reason ?? data.stdout ?? data.stderr ?? `${stagedCount} staged file(s).`,
+            timestamp: new Date().toISOString(),
+          },
+          ...current,
+        ].slice(0, RUN_LEDGER_MAX_ENTRIES));
+
+        if (command.id === "git:commit" && data.status === "success") setCommandOpen(false);
+        return;
+      }
+
+      if (command.id === "open:swarm") switchModule("swarm");
+      if (command.id === "open:memory") setMemoryOpen(true);
+      if (command.id === "open:voice") switchModule("voice");
+      if (command.id === "source:upload") {
+        switchModule("knowledge");
+        fileInputRef.current?.click();
+      }
+      if (command.id === "thread:export") exportThread();
+
+      setCommandStatus(`${command.label} completed.`);
+      setCommandOpen(false);
+    } catch (error) {
+      setCommandStatus(error instanceof Error ? error.message : "Command failed.");
+      setRuntimeState("degraded");
+    } finally {
+      setRunningCommandId(null);
+    }
+  };
+
   const generateAssistantReply = async (text: string, uploadedFiles: Attachment[]) => {
     const replyId = idRef.current++;
     const controller = new AbortController();
@@ -1394,11 +1955,13 @@ export default function Home() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...(HELIOS_API_KEY ? { "x-helios-api-key": HELIOS_API_KEY } : {}),
         },
         body: JSON.stringify({
           message: text || "Attached files",
           module: activeModuleConfig.key,
           agent: selectedAgent.name,
+          mode: conversationMode,
           attachments: uploadedFiles,
         }),
         signal: controller.signal,
@@ -1571,6 +2134,7 @@ export default function Home() {
         body: offer.sdp,
         headers: {
           "Content-Type": "application/sdp",
+          ...(HELIOS_API_KEY ? { "x-helios-api-key": HELIOS_API_KEY } : {}),
         },
       });
 
@@ -1614,11 +2178,18 @@ export default function Home() {
             </h3>
             <p className="voice-subtitle">
               {voiceState === "idle"
-                ? "Start a realtime speech session and talk naturally."
+                ? voiceStatusInfo?.realtime_available
+                  ? "Start a realtime speech session and talk naturally."
+                  : "Realtime voice needs OPENAI_API_KEY configured on the backend."
                 : voiceState === "error"
                   ? "The realtime bridge needs an OpenAI API key and backend access."
                   : "Talk normally. Interrupt whenever you need to."}
             </p>
+            <div className="voice-readiness">
+              <span>{voiceStatusInfo?.status ?? "checking"}</span>
+              <b>{voiceStatusInfo?.model ?? "realtime model"}</b>
+              <i>{voiceStatusInfo?.voice ?? "voice"}</i>
+            </div>
             {voiceError && <p className="voice-error">{voiceError}</p>}
           </div>
 
@@ -1629,6 +2200,7 @@ export default function Home() {
             <button
               className="voice-control primary"
               type="button"
+              disabled={(voiceState === "idle" || voiceState === "error") && voiceStatusInfo?.realtime_available === false}
               onClick={voiceState === "idle" || voiceState === "error" ? startRealtimeVoice : stopRealtimeVoice}
             >
               {voiceState === "idle" || voiceState === "error" ? "Start voice" : "End"}
@@ -1881,6 +2453,55 @@ export default function Home() {
       );
     }
 
+    if (activeModule === "analytics") {
+      return (
+        <div className="module-special observability-grid">
+          <section className="observability-hero">
+            <p className="section-label">Execution Observability</p>
+            <h3>{Math.round((observability?.rates?.failure_rate ?? 0) * 100)}% failure pressure</h3>
+            <span>{observability?.recommendations?.[0] ?? "Execution health is collecting from the live ledger."}</span>
+          </section>
+          <div className="observability-metrics">
+            {[
+              { label: "Events", value: observability?.window?.events_analyzed ?? 0 },
+              { label: "Completed", value: observability?.window?.completed_events ?? 0 },
+              { label: "Avg ms", value: observability?.rates?.average_duration_ms ?? 0 },
+              { label: "Max ms", value: observability?.rates?.max_duration_ms ?? 0 },
+            ].map((item) => (
+              <article key={item.label}>
+                <span>{item.label}</span>
+                <b>{item.value}</b>
+              </article>
+            ))}
+          </div>
+          <section className="observability-panel slow">
+            <p className="section-label">Slow Tools</p>
+            {(observability?.slow_tools ?? []).slice(0, 5).map((tool) => (
+              <div key={tool.tool}>
+                <b>{tool.tool}</b>
+                <span>{tool.average_duration_ms} ms avg / {tool.samples} samples</span>
+              </div>
+            ))}
+          </section>
+          <section className="observability-panel failures">
+            <p className="section-label">Recent Failures</p>
+            {(observability?.recent_failures ?? []).slice(0, 5).map((event) => (
+              <div key={event.id}>
+                <b>{event.tool ?? event.label}</b>
+                <span>{event.status} / {event.detail ?? event.error}</span>
+              </div>
+            ))}
+            {(!observability?.recent_failures || observability.recent_failures.length === 0) && (
+              <div>
+                <b>No recent failures</b>
+                <span>Ledger looks stable in the current window.</span>
+              </div>
+            )}
+          </section>
+        </div>
+      );
+    }
+
     if (activeModule === "research") {
       return (
         <div className="module-special research-intelligence-space">
@@ -1908,18 +2529,18 @@ export default function Home() {
           <section className="evidence-workbench">
             <div className="feature-heading">
               <p className="section-label">Evidence</p>
-              <strong>{researchEvidence.length} signals</strong>
+              <strong>{researchCitations.length || researchEvidence.length} cited signals</strong>
             </div>
             <div className="evidence-list">
               {researchEvidence.length > 0 ? (
                 researchEvidence.map((item, index) => (
                   <article className="evidence-card" key={`${item.name}-${index}`}>
                     <div>
-                      <p className="section-label">{item.scope ?? "source"}</p>
+                      <p className="section-label">{researchCitations[index]?.id ?? item.scope ?? "source"}</p>
                       <h4>{item.name ?? `Evidence ${index + 1}`}</h4>
                       <span>{item.snippet ?? "No snippet available."}</span>
                     </div>
-                    <strong>{item.match_terms?.length ? `${item.match_terms.length}x` : "Live"}</strong>
+                    <strong>{researchCitations[index]?.confidence ? `${Math.round((researchCitations[index]?.confidence ?? 0) * 100)}%` : item.match_terms?.length ? `${item.match_terms.length}x` : "Live"}</strong>
                   </article>
                 ))
               ) : (
@@ -1939,10 +2560,26 @@ export default function Home() {
 
           <section className="research-briefing-panel">
             <p className="section-label">Briefing</p>
-            <h4>{researchArtifact?.kind ? "Artifact ready" : "Awaiting artifact"}</h4>
-            <span>{researchArtifact?.summary ?? "Create or select a Research mission, then run it from this workspace."}</span>
+            <h4>{researchIsGrounded ? "Source-grounded answer" : researchArtifact?.kind ? "Artifact ready" : "Awaiting citations"}</h4>
+            <span>{researchGroundedAnswer ?? researchArtifact?.summary ?? "Create or select a Research mission, then run it from this workspace."}</span>
+            {researchClaims.length > 0 && (
+              <div className="citation-claims">
+                {researchClaims.slice(0, 3).map((claim, index) => (
+                  <div key={`${claim.source}-${index}`}>
+                    <b>{claim.citations?.join(", ") ?? `S${index + 1}`}</b>
+                    <span>{claim.claim}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {researchUnsupportedTerms.length > 0 && (
+              <div className="citation-gap">
+                <b>Unsupported terms</b>
+                <span>{researchUnsupportedTerms.slice(0, 8).join(", ")}</span>
+              </div>
+            )}
             <div className="research-briefing-steps">
-              {["Scope", "Gather", "Compare", "Synthesize"].map((step, index) => (
+              {["Scope", "Cite", "Check", "Synthesize"].map((step, index) => (
                 <div key={step}>
                   <b>{index + 1}</b>
                   <span>{step}</span>
@@ -1956,9 +2593,10 @@ export default function Home() {
 
     if (activeModule === "code") {
       return (
-        <div className="module-special code-split">
+        <div className="module-special code-split depth-lab">
+          <div className="code-depth-grid" aria-hidden="true" />
           <div className="file-rail">
-            {codeFiles.map((file) => (
+            {codeTargetRows.map((file) => (
               <button className="file-row" key={file.path} type="button">
                 <b>{file.path}</b>
                 <span>{file.signal}</span>
@@ -1967,20 +2605,20 @@ export default function Home() {
           </div>
           <div className="analysis-stage">
             <p className="section-label">Patch Intelligence</p>
-            <h4>Frontend module shell is stable</h4>
-            <span>Next backend wiring should stream real agent status, memory scopes, and tool output into these panels.</span>
+            <h4>{codeArtifact?.execution?.commit_ready ? "Patch ready for review" : codeArtifact ? "Code workflow captured" : "Awaiting code mission"}</h4>
+            <span>{codeArtifact?.summary ?? "Run a Code mission to identify files, apply bounded edits, and capture verification logs."}</span>
             <div className="code-terminal">
-              <code>npm run build</code>
-              <b>Compiled successfully</b>
-              <span>TypeScript and static generation passed.</span>
+              <code>{codeVerificationRows[0]?.command ?? "git status --short"}</code>
+              <b>{codeVerificationRows[0]?.status ?? "waiting"}</b>
+              <span>{codeVerificationRows[0]?.output ?? "Execution output will stream through the run ledger."}</span>
             </div>
           </div>
           <div className="patch-panel">
-            <p className="section-label">Risk Queue</p>
-            {codeFiles.map((file) => (
-              <div className="risk-row" key={file.path}>
-                <span>{file.risk}</span>
-                <b>{file.path.split("/").pop()}</b>
+            <p className="section-label">{codeEditRows.length > 0 ? "Applied Edits" : "Risk Queue"}</p>
+            {codePatchRows.map((file) => (
+              <div className="risk-row" key={file.key}>
+                <span>{file.status}</span>
+                <b>{file.label}</b>
               </div>
             ))}
           </div>
@@ -2001,7 +2639,30 @@ export default function Home() {
           ))}
           <div className="swarm-core">
             <b>HELIOS</b>
-            <span>Router Core</span>
+            <span>{swarmArtifact?.consensus?.confidence ? `${Math.round((swarmArtifact.consensus.confidence ?? 0) * 100)}% consensus` : "Router Core"}</span>
+          </div>
+          <div className="swarm-consensus-panel">
+            <p className="section-label">Debate Loop</p>
+            {(swarmArtifact?.debate ?? []).slice(0, 3).map((item, index) => (
+              <article key={`${item.agent}-${index}`}>
+                <b>{item.agent}</b>
+                <span>{item.proposal}</span>
+                <small>{item.critiques?.[0] ?? "Awaiting critique."}</small>
+              </article>
+            ))}
+            {(!swarmArtifact?.debate || swarmArtifact.debate.length === 0) && (
+              <article>
+                <b>Awaiting swarm mission</b>
+                <span>Create or run a Swarm mission to generate debate and consensus.</span>
+                <small>Agents will propose, critique, and converge.</small>
+              </article>
+            )}
+          </div>
+          <div className="swarm-assignment-panel">
+            <p className="section-label">Assignments</p>
+            {(swarmArtifact?.assignments ?? []).slice(0, 4).map((item, index) => (
+              <span key={`${item.agent}-${index}`}>{item.agent} / P{item.priority}: {item.objective}</span>
+            ))}
           </div>
         </div>
       );
@@ -2080,11 +2741,13 @@ export default function Home() {
         <p className="section-label">Run Ledger • {runLedgerStatusLabel}</p>
         {runLedgerEntries.length > 0 ? (
           runLedgerEntries.map((entry, index) => {
-            const meta = [entry.actor, entry.module, entry.status, entry.timestamp].filter(Boolean).join(" • ");
+            const timing = typeof entry.duration_ms === "number" ? `${entry.duration_ms} ms` : undefined;
+            const attempt = entry.attempt && entry.attempt > 1 ? `attempt ${entry.attempt}` : undefined;
+            const meta = [entry.actor, entry.module, entry.tool, entry.status, attempt, timing, entry.timestamp].filter(Boolean).join(" • ");
             const detail = entry.detail ? (meta ? `${meta} • ${entry.detail}` : entry.detail) : meta;
 
             return (
-              <div className="timeline-item trace-item" key={entry.id}>
+              <div className={`timeline-item trace-item ledger-event ${entry.status ?? "unknown"}`} key={entry.id}>
                 <span>{index + 1}</span>
                 <div>
                   <b>{entry.label}</b>
@@ -2179,6 +2842,9 @@ export default function Home() {
             <span className={`model-pill runtime-${runtimeState}`}>{modelName}</span>
             <button className="icon-button" type="button" aria-label="Open memory" onClick={() => setMemoryOpen(true)}>
               <Icon name="brain" />
+            </button>
+            <button className="icon-button" type="button" aria-label="Open execution log" onClick={() => setExecutionOpen(true)}>
+              <Icon name="search" />
             </button>
             <button
               className="icon-button"
@@ -2291,6 +2957,18 @@ export default function Home() {
               </div>
 
               <div className="composer">
+                <div className="conversation-modes" aria-label="Conversation mode">
+                  {(["balanced", "concise", "deep", "execute"] as ConversationMode[]).map((mode) => (
+                    <button
+                      className={conversationMode === mode ? "active" : ""}
+                      key={mode}
+                      type="button"
+                      onClick={() => setConversationMode(mode)}
+                    >
+                      {mode}
+                    </button>
+                  ))}
+                </div>
                 {attachments.length > 0 && (
                   <div className="attachment-tray">
                     {attachments.map((file) => (
@@ -2523,12 +3201,84 @@ export default function Home() {
             <span className="drawer-copy">
               Live backend memory and indexed project sources are available to the cognitive engine.
             </span>
+            <div className="brain-map">
+              <div className="brain-core">
+                <b>{projectBrain?.summary?.total_nodes ?? 0}</b>
+                <span>nodes</span>
+                <i>{projectBrain?.summary?.health ?? "loading"}</i>
+              </div>
+              <div className="brain-nodes">
+                {(projectBrain?.nodes ?? []).slice(0, 9).map((node) => (
+                  <div className={`brain-node kind-${node.kind ?? "node"}`} key={node.id}>
+                    <b>{node.label}</b>
+                    <span>{node.detail ?? node.kind}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="brain-links">
+                {(projectBrain?.links ?? []).slice(0, 6).map((link, index) => (
+                  <span key={`${link.from}-${link.to}-${index}`}>
+                    {[link.from, "->", link.to, "/", link.label].filter(Boolean).join(" ")}
+                  </span>
+                ))}
+              </div>
+            </div>
             {liveMemoryScopes.map((scope) => (
               <div className={`memory-card ${scope.tone}`} key={scope.label}>
                 <b>{scope.label}</b>
                 <span>{scope.value}</span>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {executionOpen && (
+        <div className="memory-drawer" role="dialog" aria-modal="true">
+          <div className="drawer-panel execution-drawer">
+            <button className="drawer-close" type="button" aria-label="Close execution log" onClick={() => setExecutionOpen(false)}>
+              <Icon name="close" />
+            </button>
+            <p className="eyebrow">Execution Log</p>
+            <h3>{runLedger.length} captured events</h3>
+            <span className="drawer-copy">Inspect tool calls, attempts, failures, inputs, and outputs from the live execution ledger.</span>
+            <div className="execution-drawer-grid">
+              <div className="execution-event-list">
+                {runLedger.map((event) => (
+                  <button
+                    className={`${selectedExecution?.id === event.id ? "active" : ""} ${event.status ?? "unknown"}`}
+                    key={event.id}
+                    type="button"
+                    onClick={() => setSelectedExecutionId(event.id)}
+                  >
+                    <b>{event.label}</b>
+                    <span>{[event.tool, event.status, event.duration_ms ? `${event.duration_ms} ms` : null].filter(Boolean).join(" / ")}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="execution-event-detail">
+                {selectedExecution ? (
+                  <>
+                    <b>{selectedExecution.label}</b>
+                    <span>{[selectedExecution.actor, selectedExecution.module, selectedExecution.status, selectedExecution.timestamp].filter(Boolean).join(" / ")}</span>
+                    <div>
+                      <strong>Attempt</strong>
+                      <pre>{selectedExecution.attempt ?? 1}</pre>
+                    </div>
+                    <div>
+                      <strong>Input</strong>
+                      <pre>{JSON.stringify(selectedExecution.input ?? null, null, 2)}</pre>
+                    </div>
+                    <div>
+                      <strong>Result</strong>
+                      <pre>{JSON.stringify(selectedExecution.result ?? selectedExecution.error ?? null, null, 2)}</pre>
+                    </div>
+                  </>
+                ) : (
+                  <span>No execution events captured yet.</span>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -2567,17 +3317,28 @@ export default function Home() {
               value={commandQuery}
               onChange={(event) => setCommandQuery(event.target.value)}
             />
-            {filteredQuickActions.map((action) => (
-              <button key={action} type="button" onClick={() => runQuickAction(action)}>
-                {action}
+            {commandStatus && <div className="command-status">{commandStatus}</div>}
+            {filteredCommands.map((command) => (
+              <button
+                className="launcher-command"
+                key={command.id}
+                type="button"
+                disabled={Boolean(runningCommandId)}
+                onClick={() => void runLauncherCommand(command)}
+              >
+                <span>{command.category}</span>
+                <b>{runningCommandId === command.id ? "Running..." : command.label}</b>
+                <small>{command.detail}</small>
               </button>
             ))}
             {filteredModules.map((item) => (
-              <button key={item.key} type="button" onClick={() => { switchModule(item.key); setCommandOpen(false); }}>
-                Open {item.title}
+              <button className="launcher-command" key={item.key} type="button" onClick={() => { switchModule(item.key); setCommandOpen(false); }}>
+                <span>Workspace</span>
+                <b>Open {item.title}</b>
+                <small>{item.description}</small>
               </button>
             ))}
-            {filteredQuickActions.length === 0 && filteredModules.length === 0 && (
+            {filteredCommands.length === 0 && filteredModules.length === 0 && (
               <div className="empty-command">No matching command</div>
             )}
           </div>

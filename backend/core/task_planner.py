@@ -1,120 +1,23 @@
-from core.agent_registry import (
-    AGENTS
+from core.intent_router import (
+    route_objective
 )
 
-# =========================================
-# TASK PLANNER
-# =========================================
 
 def build_execution_plan(
-
     user_query
-
 ):
-
-    query = str(
+    plan = route_objective(
         user_query
-    ).lower()
+    )
 
-    plan = []
-
-    # =====================================
-    # RESEARCH TASKS
-    # =====================================
-
-    if any(
-
-        word in query
-
-        for word in [
-
-            "research",
-            "analyze",
-            "trend",
-            "future",
-            "market"
-
-        ]
-    ):
-
-        plan.append({
-
-            "agent":
-            "research",
-
-            "objective":
-            "Perform deep research analysis"
-        })
-
-    # =====================================
-    # CODE TASKS
-    # =====================================
-
-    if any(
-
-        word in query
-
-        for word in [
-
-            "build",
-            "code",
-            "create",
-            "develop",
-            "fix",
-            "debug"
-
-        ]
-    ):
-
-        plan.append({
-
-            "agent":
-            "code",
-
-            "objective":
-            "Generate and execute implementation"
-        })
-
-    # =====================================
-    # ANALYTICS TASKS
-    # =====================================
-
-    if any(
-
-        word in query
-
-        for word in [
-
-            "optimize",
-            "performance",
-            "scale",
-            "monitor"
-
-        ]
-    ):
-
-        plan.append({
-
-            "agent":
-            "analytics",
-
-            "objective":
-            "Analyze infrastructure and performance"
-        })
-
-    # =====================================
-    # FALLBACK
-    # =====================================
-
-    if not plan:
-
-        plan.append({
-
-            "agent":
-            "research",
-
-            "objective":
-            "General intelligence analysis"
-        })
-
-    return plan
+    return [
+        {
+            "agent": task["agent"],
+            "objective": task["objective"],
+            "route": task["route"],
+            "priority": task["priority"],
+            "confidence": task["confidence"],
+            "matched_terms": task["matched_terms"]
+        }
+        for task in plan["tasks"]
+    ]

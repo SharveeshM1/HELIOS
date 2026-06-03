@@ -39,6 +39,18 @@ The frontend defaults to `http://localhost:3000` and reads the backend URL from 
 ## Useful Endpoints
 
 - `GET /health` returns backend, AI provider, cognitive engine, and source-library status.
+- `GET /ready` reports whether durable storage, authentication, admin credentials, and CORS are production-ready.
+- `GET /voice/status` reports realtime voice readiness, model, and configured voice.
+- `POST /auth/login` issues a signed user token when production auth is configured.
+- `POST /auth/users` creates viewer, operator, or admin users.
+- `GET /metrics` exposes Prometheus-compatible runtime counters.
+- `GET /autonomy/jobs` reports durable worker jobs and lease state.
+- `POST /code/repair` applies structured bounded edits and retries verification.
+- `POST /code/repair/auto` asks the configured model to propose bounded edits, verifies them, and retries with failure context.
+- `GET /git/status` previews repository status.
+- `POST /git/commit` commits already-staged files only when `confirm=true`.
+- `GET /observability` reports execution-ledger failure pressure, slow tools, and recommendations.
+- `GET /project/brain` returns the Project Brain graph of memory, sources, missions, and execution.
 - `POST /chat` sends a module-scoped message through HELIOS.
 - `GET /missions/events?limit=40` returns mission timeline events, latest mission summaries, mission stats, and agent activity.
 - `POST /missions` creates a mission and records Created/Assigned ledger events.
@@ -75,6 +87,61 @@ cd ../frontend
 ```
 
 Runtime memory files under `memory/*.json` and `backend/memory/*.json` are generated local state and are ignored for future changes.
+
+## Production Readiness
+
+HELIOS is still local-first, but the backend now supports deploy-time guardrails:
+
+- Set `HELIOS_API_KEY` to require `x-helios-api-key` on private API routes.
+- Set `HELIOS_RATE_LIMIT_PER_MINUTE` to bound requests per client IP.
+- Security headers are emitted by the FastAPI middleware.
+- `HELIOS_STORAGE_BACKEND=json` keeps local JSON storage; `sqlite` enables durable single-node runtime storage; `postgres` with `HELIOS_DATABASE_URL` enables multi-worker production runtime storage.
+- Runtime state should be mounted as persistent volumes in deployment.
+
+Docker Compose:
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+Compose starts PostgreSQL, the API, frontend, and a separate durable autonomous worker. Runs are claimed with database leases and can be recovered by another worker after an expired lease.
+
+For public deployment, place HELIOS behind HTTPS using `ops/nginx.conf`, set `HELIOS_AUTH_SECRET`, `HELIOS_ADMIN_PASSWORD`, and a restricted `HELIOS_CORS_ORIGINS`. The signed-token flow supports viewer, operator, and admin roles. SQLite-backed deployments share rate-limit buckets across API workers.
+
+To use the Compose TLS gateway, place `fullchain.pem` and `privkey.pem` in `ops/certs/`, then run:
+
+```bash
+./ops/generate_dev_certs.sh ops/certs localhost
+docker compose --profile production up --build
+```
+
+The `production` profile also starts scheduled runtime backups, Prometheus, and Alertmanager. Prometheus is available on port `9090`; Alertmanager is available on port `9093`. Replace `ops/alertmanager.yml` with a receiver based on `ops/alertmanager-webhook.yml.example` to deliver alerts externally.
+
+Back up runtime state with:
+
+```bash
+python ops/backup_runtime.py --source backend/memory --destination backups --keep 7
+```
+
+Managed database replication, cloud secret rotation, TLS certificates, and external alert delivery remain responsibilities of the target hosting platform.
+
+## Managed Deployment
+
+`ops/k8s/helios.yaml` provides Kubernetes deployments, services, persistent volumes, scalable autonomous workers, managed PostgreSQL configuration, cert-manager TLS ingress, probes, and a database backup CronJob. Replace the example domain, database URL, and image names before applying it.
+
+For cloud secret managers, install External Secrets Operator and adapt `ops/k8s/external-secret.yaml` to your `ClusterSecretStore`.
+
+Build and publish container images by creating a `v*` Git tag or running the `HELIOS Release Images` GitHub Actions workflow. Set repository variables `HELIOS_PUBLIC_API_URL` and `HELIOS_PUBLIC_WS_URL` before building the frontend image.
+
+After deployment, verify HTTPS, readiness, metrics, and optional voice configuration:
+
+```bash
+python ops/verify_production.py https://helios.example.com/api
+python ops/verify_production.py https://helios.example.com/api --require-voice
+```
+
+`NEXT_PUBLIC_HELIOS_API_KEY` can connect the browser dashboard to the API-key gate for private single-user deployments, but it is visible to the browser. Public multi-user deployments should use a trusted reverse proxy or session-based auth instead.
 
 ## Environment
 

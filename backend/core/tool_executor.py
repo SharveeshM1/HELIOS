@@ -15,6 +15,7 @@ def execute_agent_tool(
     agent_key,
     tool_name,
     *args,
+    retries=0,
     **kwargs
 
 ):
@@ -55,6 +56,18 @@ def execute_agent_tool(
         tool_name,
 
         *args,
+
+        actor=agent[
+            "name"
+        ],
+
+        module=agent_key,
+
+        retries=retries,
+
+        metadata={
+            "agent_key": agent_key
+        },
 
         **kwargs
     )

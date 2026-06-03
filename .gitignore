@@ -32,6 +32,10 @@ backend/temp_audio/
 compilation_results.txt
 memory/*.json
 backend/memory/*.json
+backend/memory/*.db
+backups/
+ops/certs/*.pem
+!ops/certs/.gitkeep
 memory/auto_generated.py
 backend/memory/auto_generated.py
 

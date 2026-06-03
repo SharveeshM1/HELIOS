@@ -12,3 +12,4 @@ SpeechRecognition
 pyttsx3
 streamlit-mic-recorder
 pytest
+psycopg[binary]

@@ -1,28 +1,30 @@
-from tools import TOOL_REGISTRY
+"""Core vector memory interface.
 
-# =========================================
-# EXECUTE TOOL
-# =========================================
+This module intentionally mirrors the public vector-memory API from
+``memory.vector_memory``. Tool execution belongs in ``core.tool_manager``.
+"""
 
-def execute_tool(
-
-    tool_name,
-    *args,
-    **kwargs
-
-):
-
-    if tool_name not in TOOL_REGISTRY:
-
-        raise Exception(
-            f"Unknown tool: {tool_name}"
-        )
-
-    tool_fn = TOOL_REGISTRY[
-        tool_name
-    ]
-
-    return tool_fn(
-        *args,
-        **kwargs
+try:
+    from memory.vector_memory import (
+        LocalVectorMemory,
+        clear_memory,
+        search_memory_records,
+        search_memory,
+        store_memory,
     )
+except ModuleNotFoundError:
+    from backend.memory.vector_memory import (
+        LocalVectorMemory,
+        clear_memory,
+        search_memory_records,
+        search_memory,
+        store_memory,
+    )
+
+__all__ = [
+    "LocalVectorMemory",
+    "clear_memory",
+    "search_memory_records",
+    "search_memory",
+    "store_memory",
+]

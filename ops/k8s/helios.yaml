@@ -1,0 +1,276 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: helios
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: helios-secrets
+  namespace: helios
+type: Opaque
+stringData:
+  HELIOS_AUTH_SECRET: replace-with-a-long-random-secret
+  HELIOS_ADMIN_PASSWORD: replace-with-a-strong-password
+  OPENAI_API_KEY: ""
+  GEMINI_API_KEY: ""
+  HELIOS_DATABASE_URL: postgresql://helios:replace-me@managed-postgres.example.com:5432/helios
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: helios-config
+  namespace: helios
+data:
+  HELIOS_ENV: production
+  HELIOS_STORAGE_BACKEND: postgres
+  HELIOS_CORS_ORIGINS: https://helios.example.com
+  HELIOS_ADMIN_USERNAME: admin
+  HELIOS_RATE_LIMIT_PER_MINUTE: "120"
+  HELIOS_WORKER_LEASE_SECONDS: "90"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: helios-memory
+  namespace: helios
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: helios-uploads
+  namespace: helios
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: helios-backups
+  namespace: helios
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: helios-backend
+  namespace: helios
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: helios-backend
+  template:
+    metadata:
+      labels:
+        app: helios-backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8000"
+    spec:
+      containers:
+        - name: backend
+          image: ghcr.io/your-org/helios-backend:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: helios-config
+            - secretRef:
+                name: helios-secrets
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: memory
+              mountPath: /app/backend/memory
+            - name: uploads
+              mountPath: /app/backend/uploads
+      volumes:
+        - name: memory
+          persistentVolumeClaim:
+            claimName: helios-memory
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: helios-uploads
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: helios-worker
+  namespace: helios
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: helios-worker
+  template:
+    metadata:
+      labels:
+        app: helios-worker
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/your-org/helios-backend:latest
+          command:
+            - python
+            - -m
+            - core.autonomous_worker
+          envFrom:
+            - configMapRef:
+                name: helios-config
+            - secretRef:
+                name: helios-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: helios-frontend
+  namespace: helios
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: helios-frontend
+  template:
+    metadata:
+      labels:
+        app: helios-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: ghcr.io/your-org/helios-frontend:latest
+          ports:
+            - containerPort: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: helios-backend
+  namespace: helios
+spec:
+  selector:
+    app: helios-backend
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: helios-frontend
+  namespace: helios
+spec:
+  selector:
+    app: helios-frontend
+  ports:
+    - port: 3000
+      targetPort: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: helios-api
+  namespace: helios
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/proxy-body-size: 2m
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  tls:
+    - hosts:
+        - helios.example.com
+      secretName: helios-tls
+  rules:
+    - host: helios.example.com
+      http:
+        paths:
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: helios-backend
+                port:
+                  number: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: helios-frontend
+  namespace: helios
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  tls:
+    - hosts:
+        - helios.example.com
+      secretName: helios-tls
+  rules:
+    - host: helios.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: helios-frontend
+                port:
+                  number: 3000
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: helios-runtime-backup
+  namespace: helios
+spec:
+  schedule: "0 2 * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: postgres:17-alpine
+              command:
+                - /bin/sh
+                - -c
+                - pg_dump "$HELIOS_DATABASE_URL" | gzip > "/backups/helios-postgres-$(date +%s).sql.gz"
+              envFrom:
+                - secretRef:
+                    name: helios-secrets
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: helios-backups

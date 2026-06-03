@@ -327,7 +327,8 @@ def build_final_report(
     swarm_results,
     total_duration,
     success_count,
-    failed_count
+    failed_count,
+    consensus=None
 
 ):
 
@@ -376,6 +377,14 @@ OPERATIONAL
             )
         )
 
+    if consensus:
+
+        sections.append(
+            build_consensus_block(
+                consensus
+            )
+        )
+
     sections.append(
 
         """
@@ -393,6 +402,295 @@ Swarm intelligence operating normally.
     )
 
     return "\n".join(sections)
+
+
+def _agent_focus(
+    agent
+):
+    if agent == "Research Agent":
+        return "evidence"
+
+    if agent == "Code Agent":
+        return "implementation"
+
+    if agent == "Analytics Agent":
+        return "observability"
+
+    return "coordination"
+
+
+def extract_proposals(
+    swarm_results
+):
+    proposals = []
+
+    for result in swarm_results:
+        output = str(
+            result.get(
+                "output",
+                ""
+            )
+        )
+        lines = [
+            line.strip(" -•\t")
+            for line in output.splitlines()
+            if line.strip()
+        ]
+        proposal = next(
+            (
+                line
+                for line in lines
+                if 24 <= len(
+                    line
+                ) <= 180
+            ),
+            output[:180].strip()
+            or "No concrete proposal emitted."
+        )
+
+        proposals.append(
+            {
+                "agent": result.get(
+                    "agent"
+                ),
+                "focus": _agent_focus(
+                    result.get(
+                        "agent"
+                    )
+                ),
+                "proposal": proposal,
+                "status": result.get(
+                    "status"
+                )
+            }
+        )
+
+    return proposals
+
+
+def build_debate(
+    proposals
+):
+    debate = []
+
+    for proposal in proposals:
+        critiques = []
+
+        if proposal["focus"] != "evidence":
+            critiques.append(
+                "Research should validate source support before execution claims are accepted."
+            )
+
+        if proposal["focus"] != "implementation":
+            critiques.append(
+                "Code should identify concrete files, verification commands, and rollback risk."
+            )
+
+        if proposal["focus"] != "observability":
+            critiques.append(
+                "Analytics should capture runtime signals, retries, and failure rates."
+            )
+
+        debate.append(
+            {
+                "agent": proposal["agent"],
+                "proposal": proposal["proposal"],
+                "critiques": critiques[:2]
+            }
+        )
+
+    return debate
+
+
+def build_consensus(
+    swarm_results,
+    rounds=None
+):
+    proposals = extract_proposals(
+        swarm_results
+    )
+    debate = build_debate(
+        proposals
+    )
+    failed_agents = [
+        result.get(
+            "agent"
+        )
+        for result in swarm_results
+        if result.get(
+            "status"
+        )
+        == "failed"
+    ]
+    active_focus = sorted(
+        {
+            proposal["focus"]
+            for proposal in proposals
+            if proposal.get(
+                "status"
+            )
+            == "completed"
+        }
+    )
+
+    consensus_steps = [
+        "Ground claims in indexed sources before presenting final recommendations.",
+        "Apply implementation changes through bounded tool execution and verification.",
+        "Record execution metrics, retries, and unresolved risks in the ledger."
+    ]
+
+    return {
+        "proposals": proposals,
+        "debate": debate,
+        "consensus_steps": consensus_steps,
+        "failed_agents": failed_agents,
+        "active_focus": active_focus,
+        "confidence": round(
+            len(
+                active_focus
+            )
+            / 3,
+            2
+        ),
+        "rounds": rounds or [
+            {
+                "round": 1,
+                "type": "proposal",
+                "results": swarm_results
+            }
+        ]
+    }
+
+
+def run_review_round(
+    query,
+    first_round,
+    web_results,
+    file_content,
+    conversation_context
+):
+    consensus = build_consensus(
+        first_round
+    )
+    debate_context = compress_context(
+        "\n".join(
+            [
+                "Other agents proposed:",
+                *[
+                    f"- {item['agent']}: {item['proposal']}"
+                    for item in consensus["proposals"]
+                ],
+                "Cross-agent critiques:",
+                *[
+                    f"- {item['agent']}: {'; '.join(item['critiques'])}"
+                    for item in consensus["debate"]
+                ],
+                "Revise your recommendation after considering the other agents."
+            ]
+        ),
+        MAX_CONTEXT_CHARS
+    )
+    combined_context = compress_context(
+        f"{conversation_context}\n\n{debate_context}",
+        MAX_CONTEXT_CHARS
+    )
+    jobs = [
+        (
+            "Research Agent",
+            run_research_agent,
+            (
+                query,
+                web_results,
+                file_content,
+                combined_context
+            )
+        ),
+        (
+            "Code Agent",
+            run_code_agent,
+            (
+                query,
+                file_content,
+                combined_context
+            )
+        ),
+        (
+            "Analytics Agent",
+            run_analytics_agent,
+            (
+                query,
+                web_results,
+                combined_context
+            )
+        )
+    ]
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=MAX_WORKERS
+    ) as executor:
+        futures = [
+            executor.submit(
+                execute_agent,
+                name,
+                fn,
+                *args
+            )
+            for name, fn, args in jobs
+        ]
+        for future in concurrent.futures.as_completed(
+            futures
+        ):
+            results.append(
+                future.result()
+            )
+    return sort_swarm_results(
+        results
+    )
+
+
+def build_consensus_block(
+    consensus
+):
+    proposal_lines = "\n".join(
+        f"- {item['agent']} ({item['focus']}): {item['proposal']}"
+        for item in consensus.get(
+            "proposals",
+            []
+        )
+    )
+    critique_lines = "\n".join(
+        f"- {item['agent']}: {'; '.join(item['critiques'])}"
+        for item in consensus.get(
+            "debate",
+            []
+        )
+    )
+    step_lines = "\n".join(
+        f"{index + 1}. {step}"
+        for index, step in enumerate(
+            consensus.get(
+                "consensus_steps",
+                []
+            )
+        )
+    )
+
+    return f"""
+# 🧠 Swarm Debate + Consensus
+
+Consensus Confidence:
+{consensus.get('confidence', 0)}
+
+## Proposals
+{proposal_lines or "- No proposals emitted."}
+
+## Cross-Agent Critique
+{critique_lines or "- No critiques emitted."}
+
+## Consensus Plan
+{step_lines or "1. Re-run swarm with clearer objective."}
+
+"""
 
 # =====================================
 # RUN SWARM
@@ -590,6 +888,28 @@ Error:
         if r["status"] == "failed"
 
     ])
+    review_results = run_review_round(
+        safe_query,
+        swarm_results,
+        safe_web,
+        safe_file,
+        safe_context
+    )
+    consensus = build_consensus(
+        review_results,
+        rounds=[
+            {
+                "round": 1,
+                "type": "proposal",
+                "results": swarm_results
+            },
+            {
+                "round": 2,
+                "type": "review",
+                "results": review_results
+            }
+        ]
+    )
 
     # =====================================
     # FINAL TELEMETRY
@@ -630,7 +950,9 @@ Failed Agents:
 
         success_count=success_count,
 
-        failed_count=failed_count
+        failed_count=failed_count,
+
+        consensus=consensus
     )
 
     return final_output

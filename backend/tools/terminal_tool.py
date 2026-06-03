@@ -1,4 +1,5 @@
 import subprocess
+import shlex
 
 
 SAFE_COMMANDS = [
@@ -10,9 +11,24 @@ SAFE_COMMANDS = [
     "cat",
     "echo",
     "python",
+    "python3",
     "pip",
-    "git"
+    "git",
+    "npm",
+    "backend/venv/bin/python"
 ]
+
+BLOCKED_TOKENS = {
+    "&&",
+    "||",
+    ";",
+    "|",
+    ">",
+    ">>",
+    "<",
+    "$(",
+    "`"
+}
 
 # =========================================
 # RUN TERMINAL COMMAND
@@ -27,7 +43,27 @@ def run_command(
 
     try:
 
-        base_command = str(command).split()[0]
+        raw_command = str(
+            command
+        ).strip()
+        if any(
+            token in raw_command
+            for token in BLOCKED_TOKENS
+        ):
+            return {
+                "status": "blocked",
+                "reason": "Shell control operators are not allowed."
+            }
+
+        args = shlex.split(
+            raw_command
+        )
+        if not args:
+            return {
+                "status": "blocked",
+                "reason": "Empty command."
+            }
+        base_command = args[0]
 
         if base_command not in SAFE_COMMANDS:
 
@@ -40,9 +76,7 @@ def run_command(
 
         result = subprocess.run(
 
-            command,
-
-            shell=True,
+            args,
 
             capture_output=True,
 

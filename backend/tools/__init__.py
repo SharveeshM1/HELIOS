@@ -3,6 +3,7 @@ from tools.terminal_tool import (
 )
 
 from tools.file_tool import (
+    append_file,
     create_file,
     read_file
 )
@@ -22,6 +23,9 @@ TOOL_REGISTRY = {
 
     "create_file":
     create_file,
+
+    "append_file":
+    append_file,
 
     "read_file":
     read_file,

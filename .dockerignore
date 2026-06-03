@@ -1,0 +1,14 @@
+.git
+**/__pycache__
+**/.pytest_cache
+**/.next
+**/node_modules
+backend/venv
+frontend/.next
+memory/*.json
+backend/memory/*.json
+backend/uploads
+temp_audio
+*.mp3
+*.wav
+*.webm
