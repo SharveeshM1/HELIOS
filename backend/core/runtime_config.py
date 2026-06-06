@@ -25,8 +25,25 @@ API_KEY = os.getenv(
 
 AUTH_SECRET = os.getenv(
     "HELIOS_AUTH_SECRET",
-    API_KEY
+    ""
 ).strip()
+
+API_KEY_ROLE = os.getenv(
+    "HELIOS_API_KEY_ROLE",
+    "operator"
+).strip().lower()
+
+AUTH_COOKIE_SECURE = os.getenv(
+    "HELIOS_AUTH_COOKIE_SECURE",
+    "true"
+    if ENVIRONMENT == "production"
+    else "false"
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on"
+}
 
 ADMIN_USERNAME = os.getenv(
     "HELIOS_ADMIN_USERNAME",
@@ -60,6 +77,23 @@ STORAGE_BACKEND = os.getenv(
 DATABASE_URL = os.getenv(
     "HELIOS_DATABASE_URL",
     ""
+).strip()
+
+VECTOR_BACKEND = os.getenv(
+    "HELIOS_VECTOR_BACKEND",
+    "local"
+).strip().lower()
+
+VECTOR_DATABASE_URL = os.getenv(
+    "HELIOS_VECTOR_DATABASE_URL",
+    ""
+).strip()
+
+VECTOR_PERSIST_DIR = os.getenv(
+    "HELIOS_VECTOR_PERSIST_DIR",
+    str(
+        MEMORY_DIR / "chroma"
+    )
 ).strip()
 
 WORKER_LEASE_SECONDS = int(
@@ -109,3 +143,12 @@ def ensure_runtime_dirs() -> None:
         directory.mkdir(
             exist_ok=True
         )
+
+def validate_config():
+    if not AUTH_SECRET and ENVIRONMENT == 'production':
+        raise RuntimeError('HELIOS_AUTH_SECRET must be set in production environment')
+    if STORAGE_BACKEND == 'postgres' and not DATABASE_URL:
+        raise RuntimeError('HELIOS_DATABASE_URL must be set for postgres backend')
+
+ensure_runtime_dirs()
+validate_config()
