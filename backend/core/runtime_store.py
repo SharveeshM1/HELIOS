@@ -29,7 +29,7 @@ class ConnectionAdapter:
         params=()
     ):
         if self.postgres:
-            query = query.replace(
+            query = logger.debug("Adapting query for postgres"); query.replace(
                 "BEGIN IMMEDIATE",
                 "BEGIN"
             ).replace(
