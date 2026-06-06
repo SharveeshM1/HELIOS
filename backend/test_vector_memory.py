@@ -8,6 +8,7 @@ os.environ.setdefault(
 from memory.vector_memory import (
     LocalVectorMemory,
     clear_memory,
+    vector_status,
     store_memory,
     search_memory
 )
@@ -85,3 +86,11 @@ def test_core_vector_memory_exports_memory_api_not_tool_dispatcher():
 
     assert results
     assert results[0] == "Core vector memory delegates to the memory backend."
+
+
+def test_vector_status_exposes_backend_contract():
+    status = vector_status()
+
+    assert "backend" in status
+    assert "collection_available" in status
+    assert "embedding_model" in status

@@ -7,6 +7,8 @@ from api.ai_provider import generate_response
 from agents.analytics_agent import run_analytics_agent
 from agents.code_agent import run_code_agent
 from agents.research_agent import run_research_agent
+from core.agent_memory import remember_agent_result
+from core.agent_memory import search_agent_memory
 from core.agent_brain import think_and_decide
 from core.memory import add_to_memory
 from core.memory import get_memory_stats
@@ -15,6 +17,8 @@ from core.memory import load_memory
 from core.memory import search_memory
 from core.shared_bus import shared_bus
 from core.task_planner import build_execution_plan
+from memory.vector_memory import search_memory_records
+from memory.vector_memory import store_memory
 
 
 class CognitiveEngine:
@@ -128,6 +132,9 @@ Objective:
 
 User Request:
 {user_text}
+
+Agent Long-Term Memory:
+{self._agent_memory_context(agent_key, user_text)}
 """
 
             try:
@@ -197,6 +204,16 @@ Error:
                     "agent": agent_key,
                     "objective": objective,
                     "output": str(output)
+                }
+            )
+            remember_agent_result(
+                agent_key,
+                objective,
+                str(
+                    output
+                ),
+                metadata={
+                    "source": "cognitive_engine"
                 }
             )
 
@@ -295,6 +312,10 @@ User Request:
             memory,
             user_text
         )[:4]
+        semantic_matches = search_memory_records(
+            user_text,
+            top_k=4
+        )
 
         items = []
 
@@ -313,6 +334,17 @@ Assistant:
 """
             )
 
+        for item in semantic_matches:
+            items.append(
+                f"""
+Semantic Memory:
+{item.get("text", "")}
+
+Similarity:
+{item.get("score", 0)}
+"""
+            )
+
         context = "\n---\n".join(items)
 
         self._trace(
@@ -320,11 +352,37 @@ Assistant:
             "Conversation Memory",
             {
                 "recent": len(recent),
-                "matches": len(matches)
+                "matches": len(matches),
+                "semantic_matches": len(
+                    semantic_matches
+                )
             }
         )
 
         return context or "No prior conversation memory found."
+
+    def _agent_memory_context(
+        self,
+        agent: str,
+        query: str
+    ) -> str:
+        memories = search_agent_memory(
+            agent,
+            query,
+            limit=4
+        )
+        return "\n---\n".join(
+            str(
+                item.get(
+                    "text",
+                    item.get(
+                        "result",
+                        ""
+                    )
+                )
+            )
+            for item in memories
+        ) or "No prior agent-specific memory found."
 
     def _trace(
         self,
@@ -352,6 +410,13 @@ Assistant:
 
         try:
 
+            store_memory(
+                f"conversation:{datetime.now().timestamp()}",
+                f"{user_text}\n\n{response}",
+                metadata={
+                    "kind": "conversation"
+                }
+            )
             shared_bus.send_message(
                 "Cognitive Engine",
                 "System",

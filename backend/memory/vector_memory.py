@@ -6,6 +6,9 @@ import re
 from dataclasses import dataclass, field
 
 from core.runtime_config import STORAGE_BACKEND
+from core.runtime_config import VECTOR_BACKEND
+from core.runtime_config import VECTOR_DATABASE_URL
+from core.runtime_config import VECTOR_PERSIST_DIR
 from core.runtime_store import load_semantic_memories
 from core.runtime_store import upsert_semantic_memory
 
@@ -251,11 +254,34 @@ def _embed(
 
 
 def _create_collection():
-    if chromadb is None:
+    if chromadb is None or VECTOR_BACKEND == "local":
         return None
 
     try:
-        client = chromadb.Client()
+        if VECTOR_BACKEND == "chroma_http":
+            from urllib.parse import urlparse
+
+            parsed = urlparse(
+                VECTOR_DATABASE_URL
+            )
+            if not parsed.hostname:
+                raise ValueError(
+                    "HELIOS_VECTOR_DATABASE_URL is required for chroma_http."
+                )
+            client = chromadb.HttpClient(
+                host=parsed.hostname,
+                port=parsed.port
+                or (
+                    443
+                    if parsed.scheme == "https"
+                    else 8000
+                ),
+                ssl=parsed.scheme == "https"
+            )
+        else:
+            client = chromadb.PersistentClient(
+                path=VECTOR_PERSIST_DIR
+            )
 
         return client.get_or_create_collection(
             name="helios_memory"
@@ -274,6 +300,24 @@ def _create_collection():
 
 collection = _create_collection()
 hydrate_memory()
+
+
+def vector_status():
+    return {
+        "backend": VECTOR_BACKEND,
+        "collection_available": collection is not None,
+        "database_url_configured": bool(
+            VECTOR_DATABASE_URL
+        ),
+        "persist_directory": VECTOR_PERSIST_DIR
+        if VECTOR_BACKEND == "chroma_persistent"
+        else None,
+        "embedding_model": os.getenv(
+            "HELIOS_VECTOR_MODEL",
+            "all-MiniLM-L6-v2"
+        ),
+        "embedding_fallback": embedding_model is None
+    }
 
 
 def clear_memory():
