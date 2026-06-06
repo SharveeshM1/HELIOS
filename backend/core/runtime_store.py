@@ -568,3 +568,4 @@ def allow_rate_limited_request(
                 )
             )
     return True
+"# Performance Note: Remove global store_lock and rely on WAL mode for SQLite."
