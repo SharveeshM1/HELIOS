@@ -9,6 +9,7 @@ from core.autonomous_runs import execute_run
 from core.runtime_config import WORKER_LEASE_SECONDS
 from core.runtime_store import claim_job
 from core.runtime_store import complete_job
+from core.swarm_engine import execute_swarm_agent
 
 
 def worker_identity() -> str:
@@ -44,6 +45,29 @@ def execute_job(
             payload.get(
                 "step",
                 {}
+            )
+        )
+    if kind == "swarm_agent":
+        return execute_swarm_agent(
+            payload.get(
+                "agent",
+                ""
+            ),
+            payload.get(
+                "query",
+                ""
+            ),
+            payload.get(
+                "web_results",
+                ""
+            ),
+            payload.get(
+                "file_content",
+                ""
+            ),
+            payload.get(
+                "conversation_context",
+                ""
             )
         )
     raise ValueError(

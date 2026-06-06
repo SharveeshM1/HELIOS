@@ -8,9 +8,13 @@ from pathlib import Path
 from typing import Dict
 from typing import List
 
+from core.agent_memory import remember_agent_result
 from core.code_workflow import run_code_execution_workflow
 from core.intent_router import route_objective
+from core.intent_router import model_assisted_route_objective
 from core.observability import build_observability_report
+from core.planning_engine import PlanningEngine
+from core.project_brain import build_project_brain
 from core.research_grounding import build_grounded_research_artifact
 from core.runtime_config import MEMORY_DIR
 from core.runtime_store import load_document
@@ -19,11 +23,37 @@ from core.runtime_store import enqueue_job
 from core.runtime_store import get_job
 from core.source_library import search_sources
 from core.source_library import source_stats
+from core.swarm_engine import run_swarm_artifact
 
 
 AUTONOMOUS_RUNS_FILE = MEMORY_DIR / "autonomous_runs.json"
 MAX_RUNS = 100
 run_lock = threading.Lock()
+
+
+def _plan_objective(
+    objective: str
+) -> Dict:
+    if os.getenv(
+        "HELIOS_MODEL_ASSISTED_PLANNING",
+        "false"
+    ).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on"
+    }:
+        return model_assisted_route_objective(
+            objective,
+            enabled=True
+        )
+    return {
+        **route_objective(
+            objective
+        ),
+        "planning_source": "rules",
+        "model_assisted": False
+    }
 
 
 def _timestamp() -> str:
@@ -196,9 +226,10 @@ def _append_event(
 
 
 def create_run(
-    objective: str
+    objective: str,
+    max_rounds: int = 3
 ) -> Dict:
-    plan = route_objective(
+    plan = _plan_objective(
         objective
     )
     run = {
@@ -213,6 +244,38 @@ def create_run(
         "plan": plan,
         "steps": [],
         "events": [],
+        "round": 1,
+        "max_rounds": max(
+            1,
+            min(
+                int(
+                    max_rounds
+                ),
+                6
+            )
+        ),
+        "reviews": [],
+        "execution_contract": {
+            "mode": "durable_worker_queue",
+            "independent_worker_steps": True,
+            "long_running": True,
+            "cancel_supported": True,
+            "resume_supported": True,
+            "max_rounds": max(
+                1,
+                min(
+                    int(
+                        max_rounds
+                    ),
+                    6
+                )
+            ),
+            "approval_gates": [
+                "state_changing_tools",
+                "git_commit",
+                "deploy"
+            ]
+        },
         "created_at": _timestamp(),
         "updated_at": _timestamp()
     }
@@ -227,7 +290,8 @@ def create_run(
         run["id"],
         "queued",
         "queued",
-        "Autonomous run created."
+        "Autonomous run created with durable worker execution contract.",
+        run["execution_contract"]
     )
 
     return get_run(
@@ -257,6 +321,14 @@ def queue_run(
             "status"
         )
         == "completed"
+        and step.get(
+            "round",
+            1
+        )
+        == run.get(
+            "round",
+            1
+        )
     }
     jobs = [
         enqueue_job(
@@ -267,7 +339,13 @@ def queue_run(
                     "objective",
                     ""
                 ),
-                "step": step
+                "step": {
+                    **step,
+                    "round": run.get(
+                        "round",
+                        1
+                    )
+                }
             }
         )
         for step in run.get(
@@ -287,6 +365,18 @@ def queue_run(
         status="queued",
         worker_job_ids=[
             job["id"]
+            for job in jobs
+        ],
+        worker_jobs=[
+            {
+                "id": job["id"],
+                "kind": job["kind"],
+                "status": job["status"],
+                "attempts": job.get(
+                    "attempts",
+                    0
+                )
+            }
             for job in jobs
         ]
     )
@@ -356,6 +446,25 @@ def reconcile_run(
             dict
         )
     ]
+    historical_steps = [
+        step
+        for step in run.get(
+            "steps",
+            []
+        )
+        if step.get(
+            "round",
+            1
+        )
+        != run.get(
+            "round",
+            1
+        )
+    ]
+    all_steps = [
+        *historical_steps,
+        *completed_steps
+    ]
     status = "running" if any(
         job.get(
             "status"
@@ -375,11 +484,74 @@ def reconcile_run(
         == "completed"
         for job in jobs
     ) else "queued"
-    return _update_run(
+    updated = _update_run(
         run_id,
         status=status,
-        steps=completed_steps,
-        worker_jobs=jobs
+        steps=all_steps,
+        worker_jobs=jobs,
+        synthesis=_synthesize_steps(
+            all_steps
+        )
+        if completed_steps
+        else run.get(
+            "synthesis"
+        )
+    )
+    if status != "completed":
+        return updated
+    review = _review_goal(
+        run.get(
+            "objective",
+            ""
+        ),
+        completed_steps
+    )
+    reviews = [
+        *run.get(
+            "reviews",
+            []
+        ),
+        review
+    ]
+    updated = _update_run(
+        run_id,
+        reviews=reviews,
+        goal_satisfied=review["satisfied"]
+    )
+    if review["satisfied"] or run.get(
+        "round",
+        1
+    ) >= run.get(
+        "max_rounds",
+        3
+    ):
+        return updated
+    next_round = run.get(
+        "round",
+        1
+    ) + 1
+    next_plan = _plan_objective(
+        f"{run.get('objective', '')} Resolve these remaining gaps: "
+        + "; ".join(
+            review["gaps"]
+        )
+    )
+    _update_run(
+        run_id,
+        round=next_round,
+        plan=next_plan,
+        worker_job_ids=[],
+        status="queued"
+    )
+    _append_event(
+        run_id,
+        "review",
+        "replanning",
+        f"Goal review opened autonomous round {next_round}.",
+        review
+    )
+    return queue_run(
+        run_id
     )
 
 
@@ -429,6 +601,42 @@ def _execute_step(
     elif route == "analytics":
         output = build_observability_report()
 
+    elif route == "planning":
+        output = PlanningEngine().create_plan(
+            objective
+        )
+
+    elif route == "knowledge":
+        output = {
+            "brain": build_project_brain(
+                8
+            ),
+            "sources": search_sources(
+                objective,
+                limit=8
+            ),
+            "stats": source_stats()
+        }
+
+    elif route == "swarm":
+        evidence = search_sources(
+            objective,
+            limit=5
+        )
+        output = run_swarm_artifact(
+            objective,
+            web_results="\n".join(
+                str(
+                    item.get(
+                        "snippet",
+                        ""
+                    )
+                )
+                for item in evidence
+            ),
+            conversation_context="Durable autonomous run requested multi-agent consensus."
+        )
+
     elif route == "voice":
         output = {
             "status": "requires_realtime_session",
@@ -441,7 +649,7 @@ def _execute_step(
             "detail": f"Unsupported autonomous route: {route}"
         }
 
-    return {
+    result = {
         "agent": step.get(
             "agent"
         ),
@@ -450,8 +658,162 @@ def _execute_step(
             "objective"
         ),
         "status": "completed",
+        "round": step.get(
+            "round",
+            1
+        ),
         "output": output,
         "completed_at": _timestamp()
+    }
+    remember_agent_result(
+        str(
+            step.get(
+                "agent",
+                route or "HELIOS"
+            )
+        ),
+        str(
+            step.get(
+                "objective",
+                objective
+            )
+        ),
+        json.dumps(
+            output,
+            ensure_ascii=False
+        ),
+        metadata={
+            "source": "autonomous_run",
+            "route": route,
+            "round": step.get(
+                "round",
+                1
+            )
+        }
+    )
+    return result
+
+
+def _review_goal(
+    objective: str,
+    steps: List[Dict]
+) -> Dict:
+    gaps = []
+    if not steps:
+        gaps.append(
+            "No autonomous steps completed."
+        )
+    for step in steps:
+        output = step.get(
+            "output"
+        )
+        if step.get(
+            "status"
+        ) != "completed":
+            gaps.append(
+                f"{step.get('route', 'step')} did not complete."
+            )
+            continue
+        if isinstance(
+            output,
+            dict
+        ):
+            if output.get(
+                "status"
+            ) in {
+                "failed",
+                "blocked",
+                "skipped"
+            }:
+                gaps.append(
+                    f"{step.get('route', 'step')} reported {output.get('status')}."
+                )
+            if output.get(
+                "blockers"
+            ):
+                gaps.append(
+                    f"{step.get('route', 'step')} has unresolved blockers."
+                )
+            if (
+                step.get(
+                    "route"
+                )
+                == "research"
+                and not output.get(
+                    "coverage",
+                    {}
+                ).get(
+                    "grounded",
+                    False
+                )
+            ):
+                gaps.append(
+                    "Research output is not grounded in indexed evidence."
+                )
+            if (
+                step.get(
+                    "route"
+                )
+                == "code"
+                and output.get(
+                    "edits"
+                )
+                and not output.get(
+                    "commit_ready",
+                    False
+                )
+            ):
+                gaps.append(
+                    "Code changes are not verification-ready."
+                )
+    return {
+        "objective": objective,
+        "satisfied": not gaps,
+        "gaps": gaps,
+        "reviewed_at": _timestamp()
+    }
+
+
+def _synthesize_steps(
+    steps: List[Dict]
+) -> Dict:
+    completed = [
+        step
+        for step in steps
+        if step.get(
+            "status"
+        )
+        == "completed"
+    ]
+    return {
+        "status": "ready"
+        if completed
+        else "empty",
+        "completed_routes": [
+            step.get(
+                "route"
+            )
+            for step in completed
+        ],
+        "agents": [
+            step.get(
+                "agent"
+            )
+            for step in completed
+        ],
+        "summary": (
+            f"Completed {len(completed)} autonomous route(s): "
+            + ", ".join(
+                str(
+                    step.get(
+                        "route"
+                    )
+                )
+                for step in completed
+            )
+        )
+        if completed
+        else "No autonomous steps completed yet."
     }
 
 
@@ -496,6 +858,14 @@ def execute_run(
             "status"
         )
         == "completed"
+        and step.get(
+            "round",
+            1
+        )
+        == run.get(
+            "round",
+            1
+        )
     }
 
     try:
@@ -547,7 +917,13 @@ def execute_run(
                     "objective",
                     ""
                 ),
-                step
+                {
+                    **step,
+                    "round": run.get(
+                        "round",
+                        1
+                    )
+                }
             )
             current = get_run(
                 run_id
@@ -573,9 +949,47 @@ def execute_run(
                 f"{step.get('agent')} step completed."
             )
 
+        current = get_run(
+            run_id
+        ) or {}
+        steps = current.get(
+            "steps",
+            []
+        )
+        current_round_steps = [
+            step
+            for step in steps
+            if step.get(
+                "round",
+                1
+            )
+            == run.get(
+                "round",
+                1
+            )
+        ]
+        review = _review_goal(
+            run.get(
+                "objective",
+                ""
+            ),
+            current_round_steps
+        )
+        reviews = [
+            *current.get(
+                "reviews",
+                []
+            ),
+            review
+        ]
         _update_run(
             run_id,
-            status="completed"
+            status="completed",
+            synthesis=_synthesize_steps(
+                steps
+            ),
+            reviews=reviews,
+            goal_satisfied=review["satisfied"]
         )
         _append_event(
             run_id,
@@ -583,6 +997,46 @@ def execute_run(
             "completed",
             "Autonomous run completed."
         )
+        current = get_run(
+            run_id
+        ) or {}
+        if (
+            not review["satisfied"]
+            and current.get(
+                "round",
+                1
+            )
+            < current.get(
+                "max_rounds",
+                3
+            )
+        ):
+            next_round = current.get(
+                "round",
+                1
+            ) + 1
+            next_plan = _plan_objective(
+                f"{current.get('objective', '')} Resolve these remaining gaps: "
+                + "; ".join(
+                    review["gaps"]
+                )
+            )
+            _update_run(
+                run_id,
+                round=next_round,
+                plan=next_plan,
+                status="queued"
+            )
+            _append_event(
+                run_id,
+                "review",
+                "replanning",
+                f"Goal review opened autonomous round {next_round}.",
+                review
+            )
+            return execute_run(
+                run_id
+            )
 
     except Exception as error:
         _update_run(

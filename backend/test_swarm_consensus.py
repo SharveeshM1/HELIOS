@@ -1,5 +1,6 @@
 from core.swarm_engine import build_consensus
 from core.swarm_engine import build_consensus_block
+from core import swarm_engine
 
 
 def test_swarm_consensus_builds_debate_and_steps():
@@ -59,3 +60,32 @@ def test_swarm_consensus_block_contains_report_sections():
     assert "Swarm Debate + Consensus" in block
     assert "Run tests." in block
     assert "Verify and report." in block
+
+
+def test_structured_swarm_runs_proposal_and_review_rounds(
+    monkeypatch
+):
+    monkeypatch.setattr(
+        swarm_engine,
+        "execute_agent",
+        lambda name, fn, *args: {
+            "agent": name,
+            "output": f"{name} proposal with concrete next steps.",
+            "status": "completed",
+            "duration": 0
+        }
+    )
+
+    artifact = swarm_engine.run_swarm_artifact(
+        "Debate the implementation"
+    )
+
+    assert len(
+        artifact["agents"]
+    ) == 3
+    assert len(
+        artifact["reviews"]
+    ) == 3
+    assert len(
+        artifact["consensus"]["rounds"]
+    ) == 2

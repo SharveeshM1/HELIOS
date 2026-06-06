@@ -255,6 +255,73 @@ Error:
         )
 
 # =====================================
+# ISOLATED WORKER ENTRYPOINT
+# =====================================
+
+def execute_swarm_agent(
+    agent_name,
+    query,
+    web_results="",
+    file_content="",
+    conversation_context=""
+):
+    safe_query = compress_context(
+        query,
+        3000
+    )
+    safe_context = compress_context(
+        conversation_context,
+        MAX_CONTEXT_CHARS
+    )
+    safe_web = compress_context(
+        web_results,
+        MAX_WEB_CHARS
+    )
+    safe_file = compress_context(
+        file_content,
+        MAX_FILE_CHARS
+    )
+    jobs = {
+        "Research Agent": (
+            run_research_agent,
+            (
+                safe_query,
+                safe_web,
+                safe_file,
+                safe_context
+            )
+        ),
+        "Code Agent": (
+            run_code_agent,
+            (
+                safe_query,
+                safe_file,
+                safe_context
+            )
+        ),
+        "Analytics Agent": (
+            run_analytics_agent,
+            (
+                safe_query,
+                safe_web,
+                safe_context
+            )
+        )
+    }
+    if agent_name not in jobs:
+        raise ValueError(
+            f"Unsupported swarm agent: {agent_name}"
+        )
+    fn, args = jobs[
+        agent_name
+    ]
+    return execute_agent(
+        agent_name,
+        fn,
+        *args
+    )
+
+# =====================================
 # SORT RESULTS
 # =====================================
 
@@ -956,3 +1023,115 @@ Failed Agents:
     )
 
     return final_output
+
+
+def run_swarm_artifact(
+    query,
+    web_results="",
+    file_content="",
+    conversation_context=""
+):
+    """Run two independent agent rounds and return the structured consensus."""
+    safe_query = compress_context(
+        query,
+        3000
+    )
+    safe_context = compress_context(
+        conversation_context,
+        MAX_CONTEXT_CHARS
+    )
+    safe_web = compress_context(
+        web_results,
+        MAX_WEB_CHARS
+    )
+    safe_file = compress_context(
+        file_content,
+        MAX_FILE_CHARS
+    )
+    jobs = [
+        (
+            "Research Agent",
+            run_research_agent,
+            (
+                safe_query,
+                safe_web,
+                safe_file,
+                safe_context
+            )
+        ),
+        (
+            "Code Agent",
+            run_code_agent,
+            (
+                safe_query,
+                safe_file,
+                safe_context
+            )
+        ),
+        (
+            "Analytics Agent",
+            run_analytics_agent,
+            (
+                safe_query,
+                safe_web,
+                safe_context
+            )
+        )
+    ]
+    started = time.time()
+    first_round = []
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=MAX_WORKERS
+    ) as executor:
+        futures = [
+            executor.submit(
+                execute_agent,
+                name,
+                fn,
+                *args
+            )
+            for name, fn, args in jobs
+        ]
+        for future in concurrent.futures.as_completed(
+            futures
+        ):
+            first_round.append(
+                future.result()
+            )
+
+    first_round = sort_swarm_results(
+        first_round
+    )
+    review_round = run_review_round(
+        safe_query,
+        first_round,
+        safe_web,
+        safe_file,
+        safe_context
+    )
+    consensus = build_consensus(
+        review_round,
+        rounds=[
+            {
+                "round": 1,
+                "type": "proposal",
+                "results": first_round
+            },
+            {
+                "round": 2,
+                "type": "review",
+                "results": review_round
+            }
+        ]
+    )
+    return {
+        "query": safe_query,
+        "agents": first_round,
+        "reviews": review_round,
+        "debate": consensus["debate"],
+        "consensus": consensus,
+        "duration": round(
+            time.time() - started,
+            2
+        )
+    }
