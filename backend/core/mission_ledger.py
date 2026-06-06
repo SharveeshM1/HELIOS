@@ -11,6 +11,8 @@ from typing import List
 
 from core.runtime_config import MEMORY_DIR
 from core.runtime_config import ensure_runtime_dirs
+from core.runtime_store import load_document
+from core.runtime_store import save_document
 
 
 MISSION_LEDGER_FILE = MEMORY_DIR / "mission_ledger.json"
@@ -52,6 +54,22 @@ def load_mission_events() -> List[Dict]:
 
     with mission_ledger_lock:
 
+        stored = load_document(
+            "mission_ledger",
+            None
+        )
+        if isinstance(
+            stored,
+            list
+        ):
+            return [
+                item
+                for item in stored
+                if isinstance(item, dict)
+                and item.get("id")
+                and item.get("stage")
+            ]
+
         if not MISSION_LEDGER_FILE.exists():
 
             return []
@@ -90,6 +108,12 @@ def save_mission_events(
 ) -> None:
 
     with mission_ledger_lock:
+
+        if save_document(
+            "mission_ledger",
+            events[-MAX_MISSION_EVENTS:]
+        ):
+            return
 
         _atomic_write(
             MISSION_LEDGER_FILE,
@@ -285,6 +309,57 @@ def advance_mission(
     }
 
 
+def recover_mission(
+    mission_id: str
+) -> Dict:
+    mission = mission_summary(
+        mission_id
+    )
+    if mission is None:
+        raise ValueError(
+            "Mission not found."
+        )
+    events = [
+        event
+        for event in load_mission_events()
+        if event.get(
+            "mission_id"
+        )
+        == mission_id
+    ]
+    last_artifact = next(
+        (
+            event.get(
+                "artifact"
+            )
+            for event in reversed(
+                events
+            )
+            if event.get(
+                "artifact"
+            )
+        ),
+        {}
+    )
+    event = record_mission_event(
+        "Assigned",
+        mission["title"],
+        agent=mission["agent"],
+        module=mission["module"],
+        status="assigned",
+        detail="Mission recovered from its latest durable checkpoint.",
+        mission_id=mission_id,
+        artifact=last_artifact
+    )
+    return {
+        "mission": mission_summary(
+            mission_id
+        ),
+        "event": event,
+        "checkpoint": last_artifact
+    }
+
+
 def latest_missions(
     limit: int = 12
 ) -> List[Dict]:
@@ -435,5 +510,6 @@ def mission_stats() -> Dict:
                 if event.get("status") != "archived"
             ]
         ),
-        "ledger_file": str(MISSION_LEDGER_FILE)
+        "ledger_file": str(MISSION_LEDGER_FILE),
+        "durable_store": "runtime_documents"
     }

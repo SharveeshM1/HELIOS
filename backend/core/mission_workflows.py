@@ -8,7 +8,7 @@ from core.planning_engine import PlanningEngine
 from core.code_workflow import run_code_execution_workflow
 from core.research_grounding import build_grounded_research_artifact
 from core.runtime_config import PROJECT_DIR
-from core.swarm_engine import build_consensus
+from core.swarm_engine import run_swarm_artifact
 from core.source_library import search_sources
 from core.source_library import source_stats
 from core.task_engine import create_task
@@ -353,25 +353,40 @@ def _swarm_artifact(
     plan = PlanningEngine().create_plan(
         title
     )
-    synthetic_results = [
-        {
-            "agent": f"{item['agent'].title()} Agent",
-            "output": item["objective"],
-            "status": "completed",
-            "duration": 0
-        }
-        for item in plan["tasks"]
-    ]
-    consensus = build_consensus(
-        synthetic_results
+    sources = search_sources(
+        title,
+        limit=5
+    )
+    files = _project_file_signals(
+        title
+    )
+    swarm = run_swarm_artifact(
+        title,
+        web_results="\n".join(
+            str(
+                item.get(
+                    "snippet",
+                    ""
+                )
+            )
+            for item in sources
+        ),
+        file_content="\n".join(
+            f"{item['path']}: {item.get('snippet', '')}"
+            for item in files
+        ),
+        conversation_context="Mission workflow requested iterative multi-agent debate."
     )
 
     return {
         "kind": "swarm",
-        "summary": f"Prepared {len(plan['tasks'])} agent assignment(s) for coordinated execution.",
+        "summary": f"Executed {len(swarm['agents'])} independent agent proposal(s) and a critique round.",
         "assignments": plan["tasks"],
-        "debate": consensus["debate"],
-        "consensus": consensus,
+        "agents": swarm["agents"],
+        "reviews": swarm["reviews"],
+        "debate": swarm["debate"],
+        "consensus": swarm["consensus"],
+        "duration": swarm["duration"],
         "target": title
     }
 
