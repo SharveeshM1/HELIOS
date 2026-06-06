@@ -1,0 +1,39 @@
+name: HELIOS Changelog
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Generate changelog
+        run: |
+          previous_tag="$(git tag --sort=-version:refname | sed -n '2p')"
+          current_tag="${{ github.event.release.tag_name }}"
+          if [ -z "$current_tag" ]; then current_tag="$(git describe --tags --always)"; fi
+          range="$current_tag"
+          if [ -n "$previous_tag" ]; then range="$previous_tag..$current_tag"; fi
+          {
+            echo "# Changelog"
+            echo
+            echo "## $current_tag"
+            echo
+            git log "$range" --pretty=format:'- %s (%h)'
+            echo
+          } > CHANGELOG.md
+      - name: Commit changelog
+        run: |
+          git config user.name "helios-release-bot"
+          git config user.email "helios-release-bot@users.noreply.github.com"
+          git add CHANGELOG.md
+          git diff --cached --quiet || git commit -m "Update changelog for release"
+          git push

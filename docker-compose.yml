@@ -5,13 +5,19 @@ services:
       dockerfile: backend/Dockerfile
     environment:
       HELIOS_ENV: production
+      HELIOS_LOG_FORMAT: json
       HELIOS_STORAGE_BACKEND: postgres
-      HELIOS_DATABASE_URL: postgresql://helios:${HELIOS_POSTGRES_PASSWORD:-helios-local-change-me}@postgres:5432/helios
-      HELIOS_AUTH_SECRET: ${HELIOS_AUTH_SECRET:-}
+      HELIOS_DATABASE_URL: postgresql://helios:${HELIOS_POSTGRES_PASSWORD:?Set HELIOS_POSTGRES_PASSWORD}@postgres:5432/helios
+      HELIOS_VECTOR_BACKEND: chroma_http
+      HELIOS_VECTOR_DATABASE_URL: http://chroma:8000
+      HELIOS_AUTH_SECRET: ${HELIOS_AUTH_SECRET:?Set HELIOS_AUTH_SECRET}
       HELIOS_ADMIN_USERNAME: ${HELIOS_ADMIN_USERNAME:-admin}
-      HELIOS_ADMIN_PASSWORD: ${HELIOS_ADMIN_PASSWORD:-}
-      HELIOS_CORS_ORIGINS: http://localhost:3000
+      HELIOS_ADMIN_PASSWORD: ${HELIOS_ADMIN_PASSWORD:?Set HELIOS_ADMIN_PASSWORD}
+      HELIOS_CORS_ORIGINS: ${HELIOS_CORS_ORIGINS:?Set HELIOS_CORS_ORIGINS}
       HELIOS_API_KEY: ${HELIOS_API_KEY:-}
+      HELIOS_API_KEY_ROLE: ${HELIOS_API_KEY_ROLE:-operator}
+      HELIOS_PLUGIN_SIGNING_KEY: ${HELIOS_PLUGIN_SIGNING_KEY:?Set HELIOS_PLUGIN_SIGNING_KEY}
+      HELIOS_MODEL_ASSISTED_PLANNING: ${HELIOS_MODEL_ASSISTED_PLANNING:-false}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     ports:
@@ -27,6 +33,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      chroma:
+        condition: service_started
 
   worker:
     build:
@@ -36,8 +44,10 @@ services:
     environment:
       HELIOS_ENV: production
       HELIOS_STORAGE_BACKEND: postgres
-      HELIOS_DATABASE_URL: postgresql://helios:${HELIOS_POSTGRES_PASSWORD:-helios-local-change-me}@postgres:5432/helios
+      HELIOS_DATABASE_URL: postgresql://helios:${HELIOS_POSTGRES_PASSWORD:?Set HELIOS_POSTGRES_PASSWORD}@postgres:5432/helios
       HELIOS_WORKER_LEASE_SECONDS: ${HELIOS_WORKER_LEASE_SECONDS:-90}
+      HELIOS_PLUGIN_SIGNING_KEY: ${HELIOS_PLUGIN_SIGNING_KEY:?Set HELIOS_PLUGIN_SIGNING_KEY}
+      HELIOS_MODEL_ASSISTED_PLANNING: ${HELIOS_MODEL_ASSISTED_PLANNING:-false}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     volumes:
@@ -52,12 +62,12 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
       args:
-        NEXT_PUBLIC_HELIOS_API_URL: http://localhost:8000
-        NEXT_PUBLIC_HELIOS_WS_URL: ws://localhost:8000/events
+        NEXT_PUBLIC_HELIOS_API_URL: ${HELIOS_PUBLIC_API_URL:?Set HELIOS_PUBLIC_API_URL}
+        NEXT_PUBLIC_HELIOS_WS_URL: ${HELIOS_PUBLIC_WS_URL:?Set HELIOS_PUBLIC_WS_URL}
         NEXT_PUBLIC_HELIOS_API_KEY: ${HELIOS_API_KEY:-}
     environment:
-      NEXT_PUBLIC_HELIOS_API_URL: http://localhost:8000
-      NEXT_PUBLIC_HELIOS_WS_URL: ws://localhost:8000/events
+      NEXT_PUBLIC_HELIOS_API_URL: ${HELIOS_PUBLIC_API_URL:?Set HELIOS_PUBLIC_API_URL}
+      NEXT_PUBLIC_HELIOS_WS_URL: ${HELIOS_PUBLIC_WS_URL:?Set HELIOS_PUBLIC_WS_URL}
       NEXT_PUBLIC_HELIOS_API_KEY: ${HELIOS_API_KEY:-}
     ports:
       - "3000:3000"
@@ -70,7 +80,7 @@ services:
     environment:
       POSTGRES_DB: helios
       POSTGRES_USER: helios
-      POSTGRES_PASSWORD: ${HELIOS_POSTGRES_PASSWORD:-helios-local-change-me}
+      POSTGRES_PASSWORD: ${HELIOS_POSTGRES_PASSWORD:?Set HELIOS_POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -78,6 +88,16 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  chroma:
+    image: chromadb/chroma:1.0.15
+    environment:
+      IS_PERSISTENT: "TRUE"
+      PERSIST_DIRECTORY: /chroma/chroma
+    volumes:
+      - chroma_data:/chroma/chroma
+    ports:
+      - "8001:8000"
 
   gateway:
     image: nginx:1.27-alpine
@@ -98,7 +118,7 @@ services:
       - production
     command: ["/ops/postgres_backup.sh"]
     environment:
-      HELIOS_DATABASE_URL: postgresql://helios:${HELIOS_POSTGRES_PASSWORD:-helios-local-change-me}@postgres:5432/helios
+      HELIOS_DATABASE_URL: postgresql://helios:${HELIOS_POSTGRES_PASSWORD:?Set HELIOS_POSTGRES_PASSWORD}@postgres:5432/helios
       HELIOS_BACKUP_DESTINATION: /backups
       HELIOS_BACKUP_KEEP: ${HELIOS_BACKUP_KEEP:-7}
       HELIOS_BACKUP_INTERVAL_SECONDS: ${HELIOS_BACKUP_INTERVAL_SECONDS:-86400}
@@ -139,9 +159,27 @@ services:
     volumes:
       - ./ops/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
 
+  grafana:
+    image: grafana/grafana:12.0.1
+    profiles:
+      - monitoring
+      - production
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${HELIOS_GRAFANA_ADMIN_PASSWORD:?Set HELIOS_GRAFANA_ADMIN_PASSWORD}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
 volumes:
   helios_memory:
   helios_uploads:
   helios_backups:
   prometheus_data:
   postgres_data:
+  chroma_data:
+  grafana_data:

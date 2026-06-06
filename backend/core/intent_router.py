@@ -1,7 +1,11 @@
+import json
+import os
 import re
 from datetime import datetime
 from typing import Dict
 from typing import List
+
+from api.ai_provider import generate_response as generate_ai_response
 
 
 ROUTES = {
@@ -66,6 +70,45 @@ ROUTES = {
             "realtime": 3
         },
         "objective": "Validate realtime voice flow, transcript handling, and assistant behavior."
+    },
+    "planning": {
+        "agent": "planning",
+        "priority": 5,
+        "keywords": {
+            "plan": 5,
+            "planning": 5,
+            "roadmap": 4,
+            "sequence": 3,
+            "prioritize": 4,
+            "workflow": 3
+        },
+        "objective": "Decompose the objective into ordered, risk-aware execution steps."
+    },
+    "knowledge": {
+        "agent": "memory",
+        "priority": 6,
+        "keywords": {
+            "memory": 5,
+            "knowledge": 5,
+            "recall": 4,
+            "project brain": 5,
+            "semantic": 4,
+            "index": 3
+        },
+        "objective": "Retrieve project knowledge and connect relevant memory signals."
+    },
+    "swarm": {
+        "agent": "collaboration",
+        "priority": 7,
+        "keywords": {
+            "swarm": 5,
+            "debate": 5,
+            "consensus": 5,
+            "collaborate": 4,
+            "critique": 4,
+            "vote": 3
+        },
+        "objective": "Run parallel agent proposals, critique them, and converge on consensus."
     }
 }
 
@@ -92,6 +135,21 @@ PHRASE_SIGNALS = {
         "talk to": 3,
         "spoken response": 4,
         "realtime assistant": 4
+    },
+    "planning": {
+        "break down": 4,
+        "execution plan": 5,
+        "next steps": 3
+    },
+    "knowledge": {
+        "project brain": 5,
+        "remember this": 4,
+        "what do we know": 4
+    },
+    "swarm": {
+        "multi agent": 5,
+        "agent debate": 5,
+        "reach consensus": 5
     }
 }
 
@@ -257,3 +315,148 @@ def route_objective(
             "%Y-%m-%d %H:%M:%S"
         )
     }
+
+
+def model_assisted_route_objective(
+    objective: str,
+    *,
+    enabled: bool | None = None
+) -> Dict:
+    baseline = route_objective(
+        objective
+    )
+    use_model = (
+        enabled
+        if enabled is not None
+        else os.getenv(
+            "HELIOS_MODEL_ASSISTED_PLANNING",
+            "false"
+        ).strip().lower()
+        in {
+            "1",
+            "true",
+            "yes",
+            "on"
+        }
+    )
+    if not use_model:
+        return {
+            **baseline,
+            "planning_source": "rules",
+            "model_assisted": False
+        }
+
+    prompt = f"""
+You are the HELIOS planning router.
+Refine this rule-based route plan for the user objective.
+Return JSON only with this shape:
+{{
+  "primary_route": "one of {', '.join(ROUTES)}",
+  "routes": ["ordered route ids"],
+  "reason": "short explanation"
+}}
+
+Objective:
+{objective}
+
+Rule-based plan:
+{json.dumps(baseline, ensure_ascii=False)}
+"""
+    try:
+        raw = str(
+            generate_ai_response(
+                prompt
+            )
+            or ""
+        ).strip()
+        if raw.startswith(
+            "```"
+        ):
+            raw = re.sub(
+                r"^```(?:json)?\s*|\s*```$",
+                "",
+                raw,
+                flags=re.IGNORECASE
+            )
+        proposal = json.loads(
+            raw
+        )
+        routes = [
+            route
+            for route in proposal.get(
+                "routes",
+                []
+            )
+            if route in ROUTES
+        ]
+        primary = proposal.get(
+            "primary_route"
+        )
+        if primary in ROUTES and primary not in routes:
+            routes.insert(
+                0,
+                primary
+            )
+        if not routes:
+            raise ValueError(
+                "Model proposal did not contain valid routes."
+            )
+        baseline_tasks = {
+            task["route"]: task
+            for task in baseline.get(
+                "tasks",
+                []
+            )
+        }
+        tasks = []
+        for index, route in enumerate(
+            routes
+        ):
+            task = baseline_tasks.get(
+                route,
+                {
+                    "agent": ROUTES[
+                        route
+                    ][
+                        "agent"
+                    ],
+                    "route": route,
+                    "objective": ROUTES[
+                        route
+                    ][
+                        "objective"
+                    ],
+                    "confidence": 0.5,
+                    "matched_terms": []
+                }
+            )
+            tasks.append(
+                {
+                    **task,
+                    "priority": index + 1
+                }
+            )
+        return {
+            **baseline,
+            "primary_route": routes[
+                0
+            ],
+            "tasks": tasks,
+            "planning_source": "model_assisted",
+            "model_assisted": True,
+            "model_reason": str(
+                proposal.get(
+                    "reason",
+                    ""
+                )
+            )[:500]
+        }
+    except Exception as error:
+        return {
+            **baseline,
+            "planning_source": "rules_fallback",
+            "model_assisted": False,
+            "model_error": str(
+                error
+            )[:500]
+        }

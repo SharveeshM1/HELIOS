@@ -83,6 +83,40 @@ MAX_ATTACHMENT_CHARS = int(
     )
 )
 
+VECTOR_BACKEND = os.getenv(
+    "HELIOS_VECTOR_BACKEND",
+    "local"
+).strip().lower()
+
+VECTOR_DATABASE_URL = os.getenv(
+    "HELIOS_VECTOR_DATABASE_URL",
+    ""
+).strip()
+
+VECTOR_PERSIST_DIR = Path(
+    os.getenv(
+        "HELIOS_VECTOR_PERSIST_DIR",
+        str(
+            MEMORY_DIR / "chroma"
+        )
+    )
+)
+
+API_KEY_ROLE = os.getenv(
+    "HELIOS_API_KEY_ROLE",
+    "admin"
+).strip().lower()
+
+AUTH_COOKIE_SECURE = os.getenv(
+    "HELIOS_AUTH_COOKIE_SECURE",
+    "false"
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on"
+}
+
 ALLOWED_MODULES = {
     "dashboard",
     "research",
@@ -103,9 +137,11 @@ def ensure_runtime_dirs() -> None:
 
     for directory in (
         MEMORY_DIR,
-        UPLOADS_DIR
+        UPLOADS_DIR,
+        VECTOR_PERSIST_DIR
     ):
 
         directory.mkdir(
+            parents=True,
             exist_ok=True
         )

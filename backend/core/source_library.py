@@ -1,3 +1,5 @@
+import base64
+import binascii
 import json
 import os
 import re
@@ -14,6 +16,12 @@ from core.runtime_config import MEMORY_DIR
 from core.runtime_config import ensure_runtime_dirs
 from core.runtime_store import load_document
 from core.runtime_store import save_document
+from core.ingestion_engine import extract_github_repo
+from core.ingestion_engine import extract_docx_text
+from core.ingestion_engine import extract_pdf_text
+from core.ingestion_engine import extract_web_text
+from memory.vector_memory import search_memory_records
+from memory.vector_memory import store_memory
 
 SOURCE_FILE = MEMORY_DIR / "source_library.json"
 MAX_SOURCE_CHARS = 12000
@@ -134,9 +142,46 @@ def upsert_source(
 ) -> Dict:
 
     clean_name = str(name).strip() or "source"
-    clean_type = str(source_type).strip() or "FILE"
-    clean_content = str(content or "")[:MAX_SOURCE_CHARS]
+    clean_type = str(source_type).strip().upper() or "FILE"
+    clean_content = str(content or "")
     clean_scope = str(scope or "project").strip() or "project"
+
+    if clean_type in {
+        "PDF",
+        "DOCX"
+    } and clean_content:
+        try:
+            pdf_bytes = base64.b64decode(
+                clean_content,
+                validate=True
+            )
+        except (
+            binascii.Error,
+            ValueError
+        ) as error:
+            raise ValueError(
+                f"{clean_type} source content must be valid base64."
+            ) from error
+        clean_content = (
+            extract_pdf_text(
+                pdf_bytes
+            )
+            if clean_type == "PDF"
+            else extract_docx_text(
+                pdf_bytes
+            )
+        )
+    elif clean_type == "WEB":
+        clean_content = extract_web_text(
+            clean_content
+        )
+    elif clean_type == "GITHUB":
+        clean_content = extract_github_repo(
+            clean_content
+        )
+
+    clean_content = clean_content[:MAX_SOURCE_CHARS]
+
     fingerprint = sha256(
         "|".join(
             [
@@ -180,7 +225,97 @@ def upsert_source(
         sources
     )
 
+    store_memory(
+        f"source:{source_id}",
+        "\n".join(
+            [
+                clean_name,
+                clean_type,
+                clean_scope,
+                clean_content
+            ]
+        ),
+        metadata={
+            "kind": "source",
+            "source_id": source_id,
+            "name": clean_name,
+            "type": clean_type,
+            "scope": clean_scope
+        }
+    )
+
     return entry
+
+
+def reindex_source(source_identifier: str, scope: str | None = None) -> Dict:
+
+    clean_identifier = str(source_identifier).strip()
+
+    if not clean_identifier:
+
+        raise ValueError("Source identifier is required.")
+
+    sources = load_sources()
+    target = None
+
+    for item in sources:
+
+        if str(item.get("id", "")) == clean_identifier or str(item.get("name", "")) == clean_identifier:
+
+            target = item
+            break
+
+    if target is None:
+
+        raise ValueError("Source not found.")
+
+    refreshed = dict(target)
+    refreshed["scope"] = str(scope or target.get("scope", "project") or "project")
+    refreshed["status"] = "Indexed" if refreshed.get("content") else "Pending"
+    refreshed["content_chars"] = len(str(refreshed.get("content", "")))
+    refreshed["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    remaining = [item for item in sources if item.get("id") != target.get("id")]
+    remaining.append(refreshed)
+    save_sources(remaining)
+
+    return {
+        **refreshed,
+        "reindexed": True,
+        "stats": source_stats(),
+    }
+
+
+def delete_source(source_identifier: str) -> Dict:
+
+    clean_identifier = str(source_identifier).strip()
+
+    if not clean_identifier:
+
+        raise ValueError("Source identifier is required.")
+
+    sources = load_sources()
+    target = None
+
+    for item in sources:
+
+        if str(item.get("id", "")) == clean_identifier or str(item.get("name", "")) == clean_identifier:
+
+            target = item
+            break
+
+    if target is None:
+
+        raise ValueError("Source not found.")
+
+    remaining = [item for item in sources if item.get("id") != target.get("id")]
+    save_sources(remaining)
+
+    return {
+        **target,
+        "deleted": True,
+        "stats": source_stats(),
+    }
 
 
 def search_sources(
@@ -200,6 +335,61 @@ def search_sources(
     clean_scope = str(scope).strip().lower() if scope else None
 
     sources = load_sources()
+    sources_by_id = {
+        str(
+            source.get("id", "")
+        ): source
+        for source in sources
+    }
+    semantic_scores = {}
+    if str(query).strip():
+        for record in search_memory_records(
+            query,
+            top_k=max(
+                limit * 4,
+                12
+            )
+        ):
+            metadata = record.get(
+                "metadata",
+                {}
+            )
+            if metadata.get("kind") != "source":
+                continue
+            source_id = str(
+                metadata.get(
+                    "source_id",
+                    ""
+                )
+            )
+            source = sources_by_id.get(
+                source_id
+            )
+            if source is None:
+                continue
+            if (
+                clean_scope
+                and
+                str(
+                    source.get(
+                        "scope",
+                        ""
+                    )
+                ).lower() != clean_scope
+            ):
+                continue
+            semantic_scores[source_id] = max(
+                float(
+                    record.get(
+                        "score",
+                        0
+                    )
+                ),
+                semantic_scores.get(
+                    source_id,
+                    0.0
+                )
+            )
     ranked = []
 
     for source in sources:
@@ -226,7 +416,17 @@ def search_sources(
             for term in terms
         )
 
-        if score or not terms:
+        semantic_score = semantic_scores.get(
+            str(
+                source.get(
+                    "id",
+                    ""
+                )
+            ),
+            0.0
+        )
+
+        if score or semantic_score > 0 or not terms:
 
             match_terms = [
                 term
@@ -246,10 +446,19 @@ def search_sources(
 
             source_copy["snippet"] = content[:280]
             source_copy["match_terms"] = match_terms
+            source_copy["semantic_score"] = round(
+                semantic_score,
+                4
+            )
+            source_copy["retrieval"] = "semantic"
+            if score and semantic_score > 0:
+                source_copy["retrieval"] = "hybrid"
+            elif score:
+                source_copy["retrieval"] = "keyword"
 
             ranked.append(
                 (
-                    score,
+                    score + semantic_score,
                     source.get("updated_at", ""),
                     source_copy
                 )

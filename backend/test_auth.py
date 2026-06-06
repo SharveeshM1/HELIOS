@@ -1,4 +1,5 @@
 from core import auth
+import pytest
 
 
 def test_signed_token_carries_role_and_permissions(monkeypatch):
@@ -46,3 +47,23 @@ def test_password_hash_verification_is_salted():
         "wrong",
         first
     )
+
+
+def test_create_user_rejects_invalid_credentials():
+    with pytest.raises(
+        ValueError,
+        match="Username is required"
+    ):
+        auth.create_user(
+            " ",
+            "strong-password"
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="at least 8 characters"
+    ):
+        auth.create_user(
+            "viewer",
+            "short"
+        )

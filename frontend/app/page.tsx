@@ -19,6 +19,16 @@ type ModuleKey =
 type Role = "user" | "assistant";
 type ConversationMode = "balanced" | "concise" | "deep" | "execute";
 
+type ConversationModeConfig = {
+  id: ConversationMode;
+  label: string;
+  description: string;
+  directive: string;
+  response_length: string;
+  reasoning_depth: string;
+  tool_posture: string;
+};
+
 type Attachment = {
   id: number;
   name: string;
@@ -45,7 +55,7 @@ type Message = {
   attachments?: Attachment[];
 };
 
-type IconName = "brain" | "command" | "deploy" | "focus" | "theme" | "close" | "upload" | "search";
+type IconName = "brain" | "command" | "deploy" | "focus" | "theme" | "close" | "upload" | "search" | "user";
 
 type RuntimeState = "checking" | "online" | "degraded" | "offline";
 
@@ -93,9 +103,17 @@ type HealthStatus = {
   backend?: string;
   ai?: {
     status?: string;
+    provider?: string;
     model?: string;
     model_available?: boolean;
     available_models?: string[];
+    providers?: Record<string, {
+      status?: string;
+      model?: string;
+      model_available?: boolean;
+      available_models?: string[];
+      error?: string;
+    }>;
     error?: string;
   };
   cognitive_engine?: {
@@ -126,6 +144,24 @@ type HealthStatus = {
     failed_tools?: number;
     blocked_tools?: number;
   };
+  security?: {
+    api_key_required?: boolean;
+    token_auth_enabled?: boolean;
+    rate_limit_per_minute?: number;
+  };
+};
+
+type AuthUser = {
+  id?: string;
+  sub?: string;
+  username: string;
+  role: "viewer" | "operator" | "admin" | string;
+  active?: boolean;
+};
+
+type AuthSession = {
+  token: string;
+  user: AuthUser;
 };
 
 type ChatResult = {
@@ -135,6 +171,17 @@ type ChatResult = {
   mode?: ConversationMode;
   trace?: CognitiveTrace[];
   plan?: PlanStep[];
+  grounded?: boolean;
+  enforcement?: GroundingEnforcement;
+};
+
+type GroundingEnforcement = {
+  policy?: string;
+  grounded?: boolean;
+  enforced?: boolean;
+  coverage_ratio?: number;
+  minimum_coverage_ratio?: number;
+  unsupported_terms?: string[];
 };
 
 type SourcesResult = {
@@ -144,6 +191,22 @@ type SourcesResult = {
     indexed_sources?: number;
     pending_sources?: number;
   };
+};
+
+type GraphNode = {
+  id?: string;
+  label?: string;
+  kind?: string;
+  weight?: number;
+  detail?: string;
+  confidence?: number;
+};
+
+type GraphLink = {
+  from?: string;
+  to?: string;
+  label?: string;
+  terms?: string[];
 };
 
 type SourceIntelligenceResult = {
@@ -169,22 +232,21 @@ type SourceIntelligenceResult = {
     unmatched_terms?: string[];
     citation_count?: number;
     grounded?: boolean;
+    enforced?: boolean;
+    coverage_ratio?: number;
+    answer_policy?: string;
+    minimum_coverage_ratio?: number;
+  };
+  enforcement?: GroundingEnforcement;
+  graph?: {
+    nodes?: GraphNode[];
+    links?: GraphLink[];
   };
 };
 
 type ProjectBrainResult = {
-  nodes?: Array<{
-    id?: string;
-    label?: string;
-    kind?: string;
-    weight?: number;
-    detail?: string;
-  }>;
-  links?: Array<{
-    from?: string;
-    to?: string;
-    label?: string;
-  }>;
+  nodes?: GraphNode[];
+  links?: GraphLink[];
   stats?: Record<string, unknown>;
   summary?: {
     total_nodes?: number;
@@ -204,6 +266,18 @@ type ObservabilityResult = {
     average_duration_ms?: number;
     max_duration_ms?: number;
   };
+  latency_percentiles?: {
+    p50_ms?: number;
+    p95_ms?: number;
+    p99_ms?: number;
+  };
+  traces?: Array<{
+    trace_id?: string;
+    events?: number;
+    failed?: number;
+    duration_ms?: number;
+    tools?: string[];
+  }>;
   tool_counts?: Record<string, number>;
   status_counts?: Record<string, number>;
   slow_tools?: Array<{
@@ -222,6 +296,90 @@ type VoiceStatusResult = {
   model?: string;
   voice?: string;
   status?: string;
+};
+
+type AutonomousRun = {
+  id: string;
+  objective: string;
+  status: string;
+  plan?: {
+    primary_route?: string;
+    tasks?: Array<{
+      agent?: string;
+      route?: string;
+      objective?: string;
+      priority?: number;
+    }>;
+  };
+  steps?: Array<{
+    agent?: string;
+    route?: string;
+    status?: string;
+    output?: unknown;
+  }>;
+  synthesis?: {
+    summary?: string;
+    completed_routes?: string[];
+  };
+  execution_contract?: {
+    mode?: string;
+    independent_worker_steps?: boolean;
+    long_running?: boolean;
+    cancel_supported?: boolean;
+    resume_supported?: boolean;
+    max_rounds?: number;
+    approval_gates?: string[];
+  };
+  worker_jobs?: Array<{
+    id?: string;
+    kind?: string;
+    status?: string;
+    attempts?: number;
+  }>;
+  events?: Array<{
+    id?: string;
+    stage?: string;
+    status?: string;
+    detail?: string;
+    timestamp?: string;
+  }>;
+  updated_at?: string;
+};
+
+type PluginRecord = {
+  name: string;
+  filename: string;
+  version?: string;
+  description?: string;
+  isolation?: string;
+  signature_type?: string;
+  verified?: boolean;
+};
+
+type IsolatedSwarmRun = {
+  id: string;
+  objective: string;
+  status: string;
+  round?: number;
+  debate_protocol?: {
+    mode?: string;
+    independent_agents?: string[];
+    rounds?: string[];
+    consensus_required?: boolean;
+  };
+  debate_state?: {
+    phase?: string;
+    completed_rounds?: number;
+  };
+  consensus?: MissionArtifact["consensus"];
+  assignments?: MissionArtifact["assignments"];
+};
+
+type GitDiffResult = {
+  status?: string;
+  staged?: boolean;
+  path?: string | null;
+  diff?: string;
 };
 
 type MissionEvent = {
@@ -319,8 +477,17 @@ type MissionArtifact = {
       return_code?: number | null;
       output?: string;
     }>;
+    verification_health?: {
+      total?: number;
+      passed?: number;
+      failed?: number;
+      unknown?: number;
+      failed_commands?: string[];
+    };
     blockers?: string[];
     commit_ready?: boolean;
+    action_required?: boolean;
+    next_actions?: string[];
     summary?: string;
   };
   assignments?: Array<{
@@ -350,6 +517,11 @@ type MissionArtifact = {
   sources?: KnowledgeSource[];
   signals?: Record<string, number>;
   coverage?: Record<string, unknown>;
+  enforcement?: GroundingEnforcement;
+  graph?: {
+    nodes?: GraphNode[];
+    links?: GraphLink[];
+  };
   target?: string;
 };
 
@@ -417,7 +589,7 @@ const modules: ModuleConfig[] = [
     eyebrow: "AI OS",
     description: "Live control surface for models, agents, memory, and active execution.",
     agent: "Orion",
-    tabs: ["Overview", "Activity", "Launchpad"],
+    tabs: ["Overview", "Activity", "Plugins", "Launchpad"],
     prompt: "Ask HELIOS to route a task, inspect memory, or launch a module...",
     stats: [
       { label: "Neural sync", value: "98%", tone: "teal" },
@@ -686,6 +858,7 @@ const websocketBaseUrl = API_BASE_URL.startsWith("https://")
 const RUN_LEDGER_WS_URL =
   (process.env.NEXT_PUBLIC_HELIOS_WS_URL ?? "").trim() ||
   `${websocketBaseUrl.replace(/\/$/, "")}/events`;
+const CHAT_WS_URL = `${websocketBaseUrl.replace(/\/$/, "")}/ws`;
 const REQUEST_TIMEOUT_MS = 12000;
 const RUN_LEDGER_MAX_ENTRIES = 40;
 const MAX_SOURCE_FILE_BYTES = 256 * 1024;
@@ -736,16 +909,36 @@ const launcherCommands: CommandDefinition[] = [
   { id: "mission:run", label: "Run Active Mission", category: "Mission", detail: "Execute the currently selected mission workflow.", keywords: ["execute", "workflow", "run"] },
   { id: "mission:research", label: "Launch Research Mission", category: "Research", detail: "Create and open a source-grounded research mission.", keywords: ["sources", "citations", "nova"] },
   { id: "mission:code", label: "Launch Code Mission", category: "Code", detail: "Create and open a bounded code-agent workflow.", keywords: ["patch", "test", "vega"] },
+  { id: "mission:recover", label: "Recover Active Mission", category: "Mission", detail: "Resume the selected mission from its latest checkpoint.", keywords: ["recover", "resume", "checkpoint"] },
+  { id: "mission:export", label: "Export Active Mission", category: "Mission", detail: "Download the selected mission and its artifacts.", keywords: ["export", "download", "artifact"] },
+  { id: "autonomy:queue", label: "Queue Autonomous Run", category: "Autonomy", detail: "Queue the command text as a durable autonomous objective.", keywords: ["autonomy", "queue", "worker", "run"] },
+  { id: "swarm:queue", label: "Queue Isolated Swarm", category: "Swarm", detail: "Queue the command text for a durable multi-worker debate.", keywords: ["swarm", "debate", "workers", "critique"] },
+  { id: "code:auto", label: "Run Automatic Code Repair", category: "Code", detail: "Use the Code workspace objective and target files to edit, verify, and retry.", keywords: ["repair", "edit", "test", "fix"] },
   { id: "source:intel", label: "Refresh Source Intelligence", category: "Knowledge", detail: "Query citations and unsupported terms for the current mission.", keywords: ["citations", "evidence", "sources"] },
   { id: "tool:status", label: "Run Git Status", category: "Tools", detail: "Execute safe git status through the backend tool ledger.", keywords: ["tool", "ledger", "git"] },
   { id: "tool:execute", label: "Execute Registered Tool", category: "Tools", detail: "Run a registered tool using: tool_name [JSON args array].", keywords: ["tool", "execute", "terminal", "file", "python"] },
   { id: "git:preview", label: "Preview Git Commit", category: "Git", detail: "Inspect staged files and proposed commit message.", keywords: ["commit", "staged", "preview"] },
   { id: "git:commit", label: "Commit Staged Changes", category: "Git", detail: "Commit already-staged files using the typed command text as message.", keywords: ["commit", "checkpoint", "staged"] },
+  { id: "git:stage", label: "Stage Git Paths", category: "Git", detail: "Stage comma-separated project paths from the command text.", keywords: ["add", "stage", "paths"] },
+  { id: "git:branch", label: "Create Git Branch", category: "Git", detail: "Create and switch to the branch named in the command text.", keywords: ["branch", "switch", "checkout"] },
+  { id: "git:push", label: "Push Git Branch", category: "Git", detail: "Push the branch named in the command text to origin.", keywords: ["push", "remote", "origin"] },
+  { id: "git:rollback", label: "Rollback Git Commit", category: "Git", detail: "Create a revert commit for the SHA in the command text.", keywords: ["rollback", "revert", "undo"] },
+  { id: "deploy:project", label: "Deploy HELIOS", category: "System", detail: "Execute the real production deployment workflow (git pull + docker restart).", keywords: ["deploy", "production", "release", "restart"] },
   { id: "open:swarm", label: "Activate Swarm", category: "Workspace", detail: "Open the swarm coordination surface.", keywords: ["agents", "collab"] },
   { id: "open:memory", label: "Inspect Memory", category: "Workspace", detail: "Open scoped memory drawer.", keywords: ["brain", "memory"] },
   { id: "open:voice", label: "Open Voice Room", category: "Workspace", detail: "Switch to realtime voice workspace.", keywords: ["speak", "audio"] },
   { id: "source:upload", label: "Upload Source", category: "Knowledge", detail: "Open source upload flow.", keywords: ["file", "index"] },
+  { id: "source:url", label: "Index Source URL", category: "Knowledge", detail: "Open the web and GitHub URL ingestion controls.", keywords: ["web", "github", "url", "index"] },
+  { id: "voice:fallback", label: "Open Voice Fallback", category: "Voice", detail: "Open provider-independent text-to-speech voice mode.", keywords: ["voice", "fallback", "speech"] },
+  { id: "mode:balanced", label: "Use Balanced Mode", category: "Conversation", detail: "Use adaptive depth and tools when useful.", keywords: ["mode", "balanced"] },
+  { id: "mode:concise", label: "Use Concise Mode", category: "Conversation", detail: "Use short direct responses.", keywords: ["mode", "concise", "short"] },
+  { id: "mode:deep", label: "Use Deep Analysis Mode", category: "Conversation", detail: "Use high-depth reasoning and evidence.", keywords: ["mode", "deep", "analysis"] },
+  { id: "mode:execute", label: "Use Execution Mode", category: "Conversation", detail: "Prioritize action, tools, and verification.", keywords: ["mode", "execute", "action"] },
   { id: "thread:export", label: "Export Thread", category: "Session", detail: "Download the current chat transcript.", keywords: ["download", "save"] },
+  { id: "export:memory", label: "Export Memory", category: "Export", detail: "Download conversation memory as JSON.", keywords: ["memory", "download", "json"] },
+  { id: "export:sources", label: "Export Sources", category: "Export", detail: "Download the source library as JSON.", keywords: ["sources", "download", "json"] },
+  { id: "export:brain", label: "Export Project Brain", category: "Export", detail: "Download the Project Brain graph as JSON.", keywords: ["brain", "graph", "download"] },
+  { id: "export:report", label: "Export Operations Report", category: "Export", detail: "Download a combined health and observability report.", keywords: ["report", "analytics", "download"] },
 ];
 
 const initialMessages: Message[] = [
@@ -765,6 +958,7 @@ const iconPaths: Record<IconName, string> = {
   close: "M6 6l12 12M18 6 6 18",
   upload: "M12 16V4m0 0 5 5m-5-5-5 5M5 17v2a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2",
   search: "M10.5 18a7.5 7.5 0 1 1 5.3-12.8 7.5 7.5 0 0 1-5.3 12.8Zm5.3-2.2L21 21",
+  user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0",
 };
 
 function Icon({ name }: { name: IconName }) {
@@ -808,17 +1002,25 @@ function formatFileSize(size: number) {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function renderText(value: unknown, fallback: string) {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  return fallback;
+}
+
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   const headers = new Headers(init.headers);
 
   if (HELIOS_API_KEY) headers.set("x-helios-api-key", HELIOS_API_KEY);
-
   try {
     return await fetch(input, {
       ...init,
       headers,
+      credentials: "include",
       signal: init.signal ?? controller.signal,
     });
   } finally {
@@ -887,13 +1089,81 @@ function parseRunLedgerMessage(message: string): RunLedgerEvent | null {
   return normalizeRunLedgerEvent({ message }, message);
 }
 
+function GraphMap({
+  nodes,
+  links,
+  selectedId,
+  onSelect,
+  label,
+}: {
+  nodes: GraphNode[];
+  links: GraphLink[];
+  selectedId?: string | null;
+  onSelect: (node: GraphNode) => void;
+  label: string;
+}) {
+  const visibleNodes = nodes.slice(0, 24);
+  const positions = new Map(
+    visibleNodes.map((node, index) => {
+      const angle = (Math.PI * 2 * index) / Math.max(visibleNodes.length, 1) - Math.PI / 2;
+      const radius = index === 0 ? 0 : 34 + (index % 3) * 9;
+      return [
+        node.id,
+        {
+          x: 50 + Math.cos(angle) * radius,
+          y: 50 + Math.sin(angle) * radius,
+        },
+      ] as const;
+    }),
+  );
+
+  return (
+    <svg className="interactive-graph" viewBox="0 0 100 100" role="img" aria-label={label}>
+      {links.slice(0, 48).map((link, index) => {
+        const from = positions.get(link.from);
+        const to = positions.get(link.to);
+        if (!from || !to) return null;
+        return <line key={`${link.from}-${link.to}-${index}`} x1={from.x} y1={from.y} x2={to.x} y2={to.y} />;
+      })}
+      {visibleNodes.map((node, index) => {
+        const position = positions.get(node.id);
+        if (!position) return null;
+        const radius = Math.min(5.5, 2.7 + Math.log2(Math.max(node.weight ?? 1, 1)));
+        return (
+          <g
+            className={`graph-node-svg kind-${node.kind ?? "node"} ${selectedId === node.id ? "selected" : ""}`}
+            key={node.id ?? index}
+            role="button"
+            tabIndex={0}
+            aria-label={`${node.label ?? "Graph node"} ${node.kind ?? ""}`}
+            onClick={() => onSelect(node)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") onSelect(node);
+            }}
+          >
+            <circle cx={position.x} cy={position.y} r={radius} />
+            <text x={position.x} y={position.y + radius + 4}>{String(node.label ?? node.id ?? "").slice(0, 18)}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [input, setInput] = useState("");
   const [activeModule, setActiveModule] = useState<ModuleKey>("dashboard");
   const [activeTab, setActiveTab] = useState("Overview");
   const [activeAgent, setActiveAgent] = useState(agents[0].name);
-  const [conversationMode, setConversationMode] = useState<ConversationMode>("balanced");
+  const [conversationMode, setConversationMode] = useState<ConversationMode>(() => {
+    if (typeof window === "undefined") return "balanced";
+    const storedMode = window.localStorage.getItem("helios-conversation-mode") as ConversationMode | null;
+    return storedMode && ["balanced", "concise", "deep", "execute"].includes(storedMode)
+      ? storedMode
+      : "balanced";
+  });
+  const [conversationModes, setConversationModes] = useState<ConversationModeConfig[]>([]);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -903,11 +1173,18 @@ export default function Home() {
   const [missionTitle, setMissionTitle] = useState("");
   const [missionModule, setMissionModule] = useState<ModuleKey>("planning");
   const [missionAgent, setMissionAgent] = useState("Orion");
+  const [missionScheduledAt, setMissionScheduledAt] = useState("");
   const [isCreatingMission, setIsCreatingMission] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [memoryItems, setMemoryItems] = useState<Array<Record<string, unknown>>>([]);
+  const [memoryStatus, setMemoryStatus] = useState("Loading memory...");
+  const [memoryBusy, setMemoryBusy] = useState(false);
   const [deployOpen, setDeployOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const [executionOpen, setExecutionOpen] = useState(false);
   const [selectedExecutionId, setSelectedExecutionId] = useState<string | null>(null);
+  const [executionSearch, setExecutionSearch] = useState("");
+  const [executionStatusFilter, setExecutionStatusFilter] = useState("all");
   const [focusMode, setFocusMode] = useState(false);
   const [commandQuery, setCommandQuery] = useState("");
   const [commandStatus, setCommandStatus] = useState("");
@@ -928,9 +1205,40 @@ export default function Home() {
   const [agentActivity, setAgentActivity] = useState<AgentActivityMap>({});
   const [indexedSources, setIndexedSources] = useState<KnowledgeSource[]>([]);
   const [sourceIntel, setSourceIntel] = useState<SourceIntelligenceResult | null>(null);
+  const [selectedSourceGraphNode, setSelectedSourceGraphNode] = useState<GraphNode | null>(null);
+  const [sourceUrl, setSourceUrl] = useState("");
+  const [sourceUrlType, setSourceUrlType] = useState<"WEB" | "GITHUB">("WEB");
+  const [sourceUrlBusy, setSourceUrlBusy] = useState(false);
   const [projectBrain, setProjectBrain] = useState<ProjectBrainResult | null>(null);
+  const [selectedBrainNode, setSelectedBrainNode] = useState<GraphNode | null>(null);
   const [observability, setObservability] = useState<ObservabilityResult | null>(null);
   const [voiceStatusInfo, setVoiceStatusInfo] = useState<VoiceStatusResult | null>(null);
+  const [autonomousRuns, setAutonomousRuns] = useState<AutonomousRun[]>([]);
+  const [autonomyObjective, setAutonomyObjective] = useState("");
+  const [autonomyBusy, setAutonomyBusy] = useState(false);
+  const [isolatedSwarmRuns, setIsolatedSwarmRuns] = useState<IsolatedSwarmRun[]>([]);
+  const [swarmObjective, setSwarmObjective] = useState("");
+  const [swarmBusy, setSwarmBusy] = useState(false);
+  const [codeRepairObjective, setCodeRepairObjective] = useState("");
+  const [codeRepairTargets, setCodeRepairTargets] = useState("");
+  const [codeRepairBusy, setCodeRepairBusy] = useState(false);
+  const [gitDiffResult, setGitDiffResult] = useState<GitDiffResult | null>(null);
+  const [gitStagePaths, setGitStagePaths] = useState("");
+  const [gitBranchName, setGitBranchName] = useState("");
+  const [gitCommitMessage, setGitCommitMessage] = useState("");
+  const [gitPushBranch, setGitPushBranch] = useState("");
+  const [gitRollbackCommit, setGitRollbackCommit] = useState("");
+  const [gitOperationStatus, setGitOperationStatus] = useState("Ready for an approved git operation.");
+  const [gitOperationBusy, setGitOperationBusy] = useState(false);
+  const [plugins, setPlugins] = useState<PluginRecord[]>([]);
+  const [pluginName, setPluginName] = useState("");
+  const [pluginVersion, setPluginVersion] = useState("1.0.0");
+  const [pluginDescription, setPluginDescription] = useState("");
+  const [pluginCode, setPluginCode] = useState("");
+  const [pluginStatus, setPluginStatus] = useState("");
+  const [terminalCommand, setTerminalCommand] = useState("git status --short");
+  const [terminalOutput, setTerminalOutput] = useState("");
+  const [terminalBusy, setTerminalBusy] = useState(false);
   const idRef = useRef(10);
   const generationRef = useRef<number | null>(null);
   const requestRef = useRef<AbortController | null>(null);
@@ -945,10 +1253,29 @@ export default function Home() {
     { id: 1, role: "system", text: "Ready when you are." },
   ]);
   const [voiceTranscriptOpen, setVoiceTranscriptOpen] = useState(false);
+  const [voiceFallbackText, setVoiceFallbackText] = useState("");
+  const [voiceFallbackBusy, setVoiceFallbackBusy] = useState(false);
   const [runtimeTick, setRuntimeTick] = useState(0);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [aiSettingsProvider, setAiSettingsProvider] = useState("ollama");
+  const [aiSettingsModel, setAiSettingsModel] = useState("");
+  const [aiSettingsStatus, setAiSettingsStatus] = useState("Saved provider preference is applied on the next health refresh.");
+  const [aiSettingsBusy, setAiSettingsBusy] = useState(false);
+  const [loginUsername, setLoginUsername] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [managedUsers, setManagedUsers] = useState<AuthUser[]>([]);
+  const [newUsername, setNewUsername] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newRole, setNewRole] = useState<AuthUser["role"]>("viewer");
+  const [userAdminStatus, setUserAdminStatus] = useState("");
 
   const activeModuleConfig = modules.find((item) => item.key === activeModule) ?? modules[0];
   const selectedAgent = agents.find((agent) => agent.name === activeAgent) ?? agents[0];
+  const activeConversationMode = conversationModes.find((mode) => mode.id === conversationMode);
   const normalizedCommandQuery = commandQuery.trim().toLowerCase();
   const filteredModules = normalizedCommandQuery
     ? modules.filter((item) =>
@@ -964,6 +1291,7 @@ export default function Home() {
     : launcherCommands;
   const aiStatus = health?.ai?.status ?? "unknown";
   const modelName = health?.ai?.model ?? "qwen2.5:3b";
+  const availableProviderModels = health?.ai?.providers?.[aiSettingsProvider]?.available_models ?? health?.ai?.available_models ?? [];
   const memoryStats = health?.cognitive_engine?.memory;
   const sourceStats = health?.sources;
   const memoryUsage = memoryStats?.storage_usage_percent ?? 0;
@@ -1030,6 +1358,14 @@ export default function Home() {
     runLedger.find((event) => event.id === selectedExecutionId) ??
     runLedger[0] ??
     null;
+  const filteredExecutionEvents = runLedger.filter((event) => {
+    const query = executionSearch.trim().toLowerCase();
+    const matchesStatus = executionStatusFilter === "all" || event.status === executionStatusFilter;
+    const matchesQuery = !query || `${event.label} ${event.tool ?? ""} ${event.actor ?? ""} ${event.detail ?? ""}`
+      .toLowerCase()
+      .includes(query);
+    return matchesStatus && matchesQuery;
+  });
   const intelligenceStatus = isGenerating
     ? attachments.length > 0
       ? "Synthesizing"
@@ -1076,11 +1412,15 @@ export default function Home() {
   const researchCitations = researchArtifact?.citations ?? sourceIntel?.citations ?? [];
   const researchClaims = researchArtifact?.claims ?? sourceIntel?.claims ?? [];
   const researchCoverage = researchArtifact?.coverage ?? sourceIntel?.coverage ?? null;
-  const researchIsGrounded = Boolean((researchCoverage as { grounded?: unknown } | null)?.grounded);
+  const researchEnforcement = researchArtifact?.enforcement ?? sourceIntel?.enforcement ?? null;
+  const researchIsGrounded = Boolean(researchEnforcement?.enforced ?? (researchCoverage as { enforced?: unknown } | null)?.enforced);
   const researchUnsupportedTerms = Array.isArray((researchCoverage as { unmatched_terms?: unknown } | null)?.unmatched_terms)
     ? ((researchCoverage as { unmatched_terms?: string[] }).unmatched_terms ?? [])
+    : Array.isArray(researchEnforcement?.unsupported_terms)
+      ? researchEnforcement.unsupported_terms
     : [];
   const researchGroundedAnswer = researchArtifact?.grounded_answer ?? sourceIntel?.grounded_answer;
+  const researchGraph = researchArtifact?.graph ?? sourceIntel?.graph;
   const researchEvidence =
     researchArtifact?.evidence && researchArtifact.evidence.length > 0
       ? researchArtifact.evidence
@@ -1119,6 +1459,10 @@ export default function Home() {
       ? codeArtifact.execution.verification
       : [{ label: "Ledger", command: "Run a Code mission", status: "waiting", output: "Verification results will appear here." }];
   const codeEditRows = codeArtifact?.execution?.edits ?? [];
+  const codeActionRows = codeArtifact?.execution?.next_actions ?? [];
+  const diffLines = (gitDiffResult?.diff ?? "").split("\n");
+  const diffRemoved = diffLines.filter((line) => line.startsWith("-") && !line.startsWith("---"));
+  const diffAdded = diffLines.filter((line) => line.startsWith("+") && !line.startsWith("+++"));
   const codePatchRows =
     codeEditRows.length > 0
       ? codeEditRows.map((edit) => ({
@@ -1139,25 +1483,6 @@ export default function Home() {
           .reverse()
           .find((event) => event.artifact?.kind === "swarm")
           ?.artifact ?? null;
-  const artifactHighlights = [
-    ...(latestArtifact?.target_files ?? []).slice(0, 4).map((path) => ({
-      label: "File",
-      value: path,
-    })),
-    ...(latestArtifact?.steps ?? []).slice(0, 4).map((step) => ({
-      label: "Step",
-      value: step,
-    })),
-    ...(latestArtifact?.checks ?? []).slice(0, 4).map((check) => ({
-      label: "Check",
-      value: check,
-    })),
-    ...(latestArtifact?.assignments ?? []).slice(0, 4).map((assignment) => ({
-      label: assignment.agent ?? "Agent",
-      value: assignment.objective ?? "Assigned mission step",
-    })),
-  ].slice(0, 4);
-
   const orchestrationFlow = [
     { agent: "Input", state: "Queued", detail: `${attachments.length} sources / ${messages.length} turns`, tone: "blue" },
     { agent: "Orion", state: isGenerating ? "Planning" : "Watching", detail: "Mission decomposition active", tone: "teal" },
@@ -1166,13 +1491,6 @@ export default function Home() {
     { agent: "Lyra", state: activeModule === "voice" ? "Live" : "Synthesizing", detail: "Human-facing response layer", tone: "green" },
     { agent: "Memory", state: memoryUsage > 72 ? "Pressure" : "Indexing", detail: `${memoryTotal} recalled threads`, tone: memoryUsage > 72 ? "amber" : "teal" },
   ];
-
-  const telemetryPoints = Array.from({ length: 18 }, (_, index) => {
-    const anomaly = index === 5 || index === 13;
-    const height = 24 + ((index * 17 + runtimeTick * 7) % 64) + (anomaly ? 34 : 0);
-    const stamp = `T+${String(index).padStart(2, "0")}m`;
-    return { height: Math.min(height, 118), anomaly, stamp };
-  });
 
   const stopRealtimeVoice = () => {
     voiceDataChannelRef.current?.close();
@@ -1194,13 +1512,6 @@ export default function Home() {
     setVoiceState("idle");
   };
 
-  const intelligenceCosts = [
-    { label: "Context ops", value: `${(18.4 + (runtimeTick % 6) / 10).toFixed(1)}M`, tone: "teal" },
-    { label: "Inference saturation", value: `${72 + (runtimeTick % 9)}%`, tone: "amber" },
-    { label: "Reasoning cost", value: `${(2.7 + (runtimeTick % 4) / 10).toFixed(1)}x`, tone: "violet" },
-    { label: "Memory pressure", value: `${Math.max(memoryUsage, 19)}%`, tone: memoryUsage > 72 ? "amber" : "blue" },
-  ];
-
   const agentTimeline = [
     { actor: "Nova", status: "retrieval jitter", detail: "Source confidence dipped; retrying second-pass evidence.", risk: "warn" },
     { actor: "Vega", status: "conflict raised", detail: "Predicts backend instability if realtime bridge deploys without fallback.", risk: "danger" },
@@ -1210,6 +1521,68 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
+
+    const restoreSession = async () => {
+      try {
+        const healthResult = await fetchWithTimeout(`${API_BASE_URL}/health`, {
+          cache: "no-store",
+        });
+        const healthData = healthResult.ok ? (await healthResult.json()) as HealthStatus : null;
+        const requiresToken = Boolean(healthData?.security?.token_auth_enabled) && !HELIOS_API_KEY;
+
+        if (!active) return;
+        setAuthRequired(requiresToken);
+
+        if (!requiresToken) {
+          setAuthChecking(false);
+          return;
+        }
+
+        const meResult = await fetchWithTimeout(`${API_BASE_URL}/auth/me`, {
+          cache: "no-store",
+        });
+        if (!meResult.ok) throw new Error("Session expired");
+
+        const meData = (await meResult.json()) as { user?: AuthUser };
+        if (!meData.user) throw new Error("Session user missing");
+
+        if (!active) return;
+        setAuthUser(meData.user);
+      } catch {
+        if (active) setAuthUser(null);
+      } finally {
+        if (active) setAuthChecking(false);
+      }
+    };
+
+    void restoreSession();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadAiSettings = async () => {
+      try {
+        const result = await fetchWithTimeout(`${API_BASE_URL}/settings/ai`, {
+          cache: "no-store",
+        });
+
+        if (!result.ok) return;
+
+        const data = (await result.json()) as { provider?: string; model?: string };
+
+        if (!active) return;
+
+        setAiSettingsProvider(data.provider ?? "ollama");
+        setAiSettingsModel(data.model ?? "");
+      } catch {
+        return;
+      }
+    };
 
     const loadHealth = async () => {
       try {
@@ -1226,6 +1599,9 @@ export default function Home() {
         if (!active) return;
 
         setHealth(data);
+        setAiSettingsProvider((current) => current && current !== "ollama" ? current : (data.ai?.provider ?? "ollama"));
+        setAiSettingsModel((current) => current || (data.ai?.model ?? ""));
+        setAuthRequired(Boolean(data.security?.token_auth_enabled) && !HELIOS_API_KEY);
         setAgentActivity(data.missions?.agents ?? {});
         setLastTrace((current) => (current.length > 0 ? current : data.cognitive_engine?.trace ?? []));
         setLastPlan((current) => (current.length > 0 ? current : data.cognitive_engine?.plan ?? []));
@@ -1362,13 +1738,75 @@ export default function Home() {
       }
     };
 
+    const loadConversationModes = async () => {
+      try {
+        const result = await fetchWithTimeout(`${API_BASE_URL}/conversation/modes`, {
+          cache: "no-store",
+        });
+        if (!result.ok) return;
+        const data = (await result.json()) as { modes?: ConversationModeConfig[] };
+        if (active) setConversationModes(data.modes ?? []);
+      } catch {
+        return;
+      }
+    };
+
+    const loadAutonomousRuns = async () => {
+      try {
+        const result = await fetchWithTimeout(`${API_BASE_URL}/autonomy/runs?limit=12`, {
+          cache: "no-store",
+        });
+
+        if (!result.ok) return;
+
+        const data = (await result.json()) as { runs?: AutonomousRun[] };
+
+        if (!active) return;
+
+        setAutonomousRuns((data.runs ?? []).reverse());
+      } catch {
+        return;
+      }
+    };
+
+    const loadSwarmRuns = async () => {
+      try {
+        const result = await fetchWithTimeout(`${API_BASE_URL}/swarm/runs?limit=8`, {
+          cache: "no-store",
+        });
+        if (!result.ok) return;
+        const data = (await result.json()) as { runs?: IsolatedSwarmRun[] };
+        if (active) setIsolatedSwarmRuns((data.runs ?? []).reverse());
+      } catch {
+        return;
+      }
+    };
+
+    const loadPlugins = async () => {
+      try {
+        const result = await fetchWithTimeout(`${API_BASE_URL}/plugins`, {
+          cache: "no-store",
+        });
+        if (!result.ok) return;
+        const data = (await result.json()) as { plugins?: PluginRecord[] };
+        if (active) setPlugins(data.plugins ?? []);
+      } catch {
+        return;
+      }
+    };
+
     void loadHealth();
+    void loadAiSettings();
     void loadSources();
     void loadMissionEvents();
     void loadExecutionEvents();
     void loadProjectBrain();
     void loadObservability();
     void loadVoiceStatus();
+    void loadConversationModes();
+    void loadAutonomousRuns();
+    void loadSwarmRuns();
+    void loadPlugins();
     const timer = window.setInterval(loadHealth, 10000);
     const sourceTimer = window.setInterval(loadSources, 15000);
     const missionTimer = window.setInterval(loadMissionEvents, 12000);
@@ -1376,6 +1814,9 @@ export default function Home() {
     const brainTimer = window.setInterval(loadProjectBrain, 12000);
     const observabilityTimer = window.setInterval(loadObservability, 10000);
     const voiceTimer = window.setInterval(loadVoiceStatus, 20000);
+    const autonomyTimer = window.setInterval(loadAutonomousRuns, 8000);
+    const swarmTimer = window.setInterval(loadSwarmRuns, 8000);
+    const pluginTimer = window.setInterval(loadPlugins, 30000);
 
     return () => {
       active = false;
@@ -1386,8 +1827,45 @@ export default function Home() {
       window.clearInterval(brainTimer);
       window.clearInterval(observabilityTimer);
       window.clearInterval(voiceTimer);
+      window.clearInterval(autonomyTimer);
+      window.clearInterval(swarmTimer);
+      window.clearInterval(pluginTimer);
     };
   }, []);
+
+  const saveAiSettings = async () => {
+    setAiSettingsBusy(true);
+    setAiSettingsStatus("Saving provider preference...");
+
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/settings/ai`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          provider: aiSettingsProvider,
+          model: aiSettingsModel,
+        }),
+      });
+
+      if (!result.ok) throw new Error(`Save failed with ${result.status}`);
+
+      const data = (await result.json()) as { provider?: string; model?: string };
+      setAiSettingsProvider(data.provider ?? aiSettingsProvider);
+      setAiSettingsModel(data.model ?? aiSettingsModel);
+      setAiSettingsStatus(`Saved ${data.provider ?? aiSettingsProvider} preference${data.model ? ` for ${data.model}` : ""}.`);
+      await fetchWithTimeout(`${API_BASE_URL}/health`, { cache: "no-store" });
+    } catch (error) {
+      setAiSettingsStatus(error instanceof Error ? error.message : "Unable to save provider preference.");
+    } finally {
+      setAiSettingsBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    window.localStorage.setItem("helios-conversation-mode", conversationMode);
+  }, [conversationMode]);
 
   useEffect(() => {
     const handleShortcut = (event: globalThis.KeyboardEvent) => {
@@ -1436,6 +1914,12 @@ export default function Home() {
       active = false;
     };
   }, [activeModule, activeModuleConfig.title, activeMission?.title, indexedSources.length]);
+
+  useEffect(() => {
+    if (!memoryOpen) return;
+
+    void refreshMemoryItems();
+  }, [memoryOpen]);
 
   useEffect(() => {
     return () => stopRealtimeVoice();
@@ -1522,6 +2006,97 @@ export default function Home() {
     setActiveAgent(nextAgent.name);
   };
 
+  const login = async () => {
+    if (!loginUsername.trim() || !loginPassword || loginBusy) return;
+
+    setLoginBusy(true);
+    setLoginError("");
+
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/auth/login`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          username: loginUsername.trim(),
+          password: loginPassword,
+        }),
+      });
+      const data = (await result.json()) as AuthSession & { detail?: string };
+
+      if (!result.ok || !data.token || !data.user) {
+        throw new Error(data.detail ?? "Unable to sign in.");
+      }
+
+      setAuthUser(data.user);
+      setLoginPassword("");
+    } catch (error) {
+      setLoginError(error instanceof Error ? error.message : "Unable to sign in.");
+    } finally {
+      setLoginBusy(false);
+    }
+  };
+
+  const logout = () => {
+    void fetchWithTimeout(`${API_BASE_URL}/auth/logout`, {
+      method: "POST",
+    }).catch(() => undefined);
+    setAuthUser(null);
+    setAccountOpen(false);
+    setManagedUsers([]);
+  };
+
+  const loadManagedUsers = async () => {
+    if (authUser?.role !== "admin") return;
+
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/auth/users`, {
+        cache: "no-store",
+      });
+      if (!result.ok) throw new Error(`Users returned ${result.status}`);
+      const data = (await result.json()) as { users?: AuthUser[] };
+      setManagedUsers(data.users ?? []);
+    } catch {
+      setUserAdminStatus("Unable to load users.");
+    }
+  };
+
+  const openAccount = () => {
+    setAccountOpen(true);
+    setUserAdminStatus("");
+    void loadManagedUsers();
+  };
+
+  const addManagedUser = async () => {
+    if (!newUsername.trim() || !newPassword || authUser?.role !== "admin") return;
+
+    setUserAdminStatus("Creating user...");
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/auth/users`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          username: newUsername.trim(),
+          password: newPassword,
+          role: newRole,
+        }),
+      });
+      const data = (await result.json()) as { user?: AuthUser; detail?: string };
+      if (!result.ok || !data.user) throw new Error(data.detail ?? "Unable to create user.");
+
+      setManagedUsers((current) => [...current, data.user as AuthUser]);
+      setNewUsername("");
+      setNewPassword("");
+      setNewRole("viewer");
+      setUserAdminStatus(`Created ${data.user.username}.`);
+    } catch (error) {
+      setUserAdminStatus(error instanceof Error ? error.message : "Unable to create user.");
+    }
+  };
+
   const attachFiles = async (files: FileList | File[]) => {
     const nextFiles = await Promise.all(
       Array.from(files).map(async (file) => {
@@ -1531,21 +2106,37 @@ export default function Home() {
           TEXT_SOURCE_EXTENSIONS.some((extension) =>
             file.name.toLowerCase().endsWith(extension),
           );
-        const canIndex = isTextSource && file.size <= MAX_SOURCE_FILE_BYTES;
+        const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+        const isDocx =
+          file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+          file.name.toLowerCase().endsWith(".docx");
+        const canIndex = (isTextSource || isPdf || isDocx) && file.size <= MAX_SOURCE_FILE_BYTES * 4;
 
         let content = "";
 
         if (canIndex) {
-          content = (await file.text()).slice(0, MAX_SOURCE_CONTENT_CHARS);
+          if (isPdf || isDocx) {
+            // Convert binary documents to base64 for backend ingestion.
+            const reader = new FileReader();
+            content = await new Promise((resolve) => {
+              reader.onload = () => {
+                const base64 = (reader.result as string).split(",")[1];
+                resolve(base64);
+              };
+              reader.readAsDataURL(file);
+            });
+          } else {
+            content = (await file.text()).slice(0, MAX_SOURCE_CONTENT_CHARS);
+          }
         }
 
         return {
           id: idRef.current++,
           name: file.name,
           size: formatFileSize(file.size),
-          type,
+          type: isPdf ? "PDF" : isDocx ? "DOCX" : type,
           content,
-          status: content ? "Ready" : isTextSource ? "Too large" : "Attached",
+          status: content ? "Ready" : isTextSource || isPdf || isDocx ? "Too large" : "Attached",
         };
       }),
     );
@@ -1600,6 +2191,130 @@ export default function Home() {
     }
   };
 
+  const ingestSourceUrl = async () => {
+    const cleanUrl = sourceUrl.trim();
+    if (!cleanUrl || sourceUrlBusy) return;
+    setSourceUrlBusy(true);
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/sources`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: cleanUrl,
+          type: sourceUrlType,
+          size: "remote",
+          content: cleanUrl,
+          scope: "project",
+        }),
+      }, REQUEST_TIMEOUT_MS * 3);
+      if (!result.ok) throw new Error(`Source ingestion returned ${result.status}`);
+      const data = (await result.json()) as { source?: KnowledgeSource };
+      if (data.source) {
+        setIndexedSources((current) => [
+          data.source as KnowledgeSource,
+          ...current.filter((item) => item.id !== data.source?.id),
+        ]);
+      }
+      setSourceUrl("");
+    } catch {
+      setRuntimeState("degraded");
+    } finally {
+      setSourceUrlBusy(false);
+    }
+  };
+
+  const removeSource = async (source: KnowledgeSource) => {
+    if (!window.confirm(`Remove source "${source.name}" from the indexed library?`)) return;
+
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/sources/${encodeURIComponent(String(source.id))}`, {
+        method: "DELETE",
+      });
+
+      const data = (await result.json()) as { detail?: string };
+
+      if (!result.ok) throw new Error(data.detail ?? `Source removal returned ${result.status}`);
+
+      setIndexedSources((current) => current.filter((item) => item.id !== source.id));
+      setSourceIntel(null);
+    } catch (error) {
+      setRuntimeState("degraded");
+      window.alert(error instanceof Error ? error.message : "Unable to remove source.");
+    }
+  };
+
+  const reindexSource = async (source: KnowledgeSource) => {
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/sources/${encodeURIComponent(String(source.id))}/reindex`, {
+        method: "POST",
+      });
+      const data = (await result.json()) as { source?: KnowledgeSource; detail?: string };
+
+      if (!result.ok) throw new Error(data.detail ?? `Source reindex returned ${result.status}`);
+
+      if (data.source) {
+        setIndexedSources((current) => [
+          data.source as KnowledgeSource,
+          ...current.filter((item) => item.id !== data.source?.id),
+        ]);
+      }
+    } catch (error) {
+      setRuntimeState("degraded");
+      window.alert(error instanceof Error ? error.message : "Unable to reindex source.");
+    }
+  };
+
+  const refreshPlugins = async () => {
+    const result = await fetchWithTimeout(`${API_BASE_URL}/plugins`, {
+      cache: "no-store",
+    });
+    if (!result.ok) throw new Error(`Plugins returned ${result.status}`);
+    const data = (await result.json()) as { plugins?: PluginRecord[] };
+    setPlugins(data.plugins ?? []);
+  };
+
+  const uploadPlugin = async () => {
+    if (!pluginName.trim() || !pluginCode.trim()) return;
+    setPluginStatus("Uploading and verifying plugin...");
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/plugins/upload`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: pluginName.trim(),
+          version: pluginVersion.trim() || "1.0.0",
+          description: pluginDescription.trim(),
+          code: pluginCode,
+          dependencies: [],
+        }),
+      });
+      const data = (await result.json()) as { message?: string; detail?: string };
+      if (!result.ok) throw new Error(data.detail ?? `Plugin upload returned ${result.status}`);
+      setPluginStatus(data.message ?? "Plugin uploaded.");
+      setPluginName("");
+      setPluginDescription("");
+      setPluginCode("");
+      await refreshPlugins();
+    } catch (error) {
+      setPluginStatus(error instanceof Error ? error.message : "Plugin upload failed.");
+    }
+  };
+
+  const removePlugin = async (plugin: PluginRecord) => {
+    if (!window.confirm(`Uninstall plugin "${plugin.name}"?`)) return;
+    const result = await fetchWithTimeout(`${API_BASE_URL}/plugins/${encodeURIComponent(plugin.filename)}`, {
+      method: "DELETE",
+    });
+    const data = (await result.json()) as { message?: string; detail?: string };
+    if (!result.ok) throw new Error(data.detail ?? `Plugin uninstall returned ${result.status}`);
+    setPluginStatus(data.message ?? "Plugin uninstalled.");
+    await refreshPlugins();
+  };
+
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     if (event.target.files) void attachFiles(event.target.files);
     event.target.value = "";
@@ -1627,6 +2342,58 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
+  const exportJson = (filename: string, value: unknown) => {
+    const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportProjectData = async (kind: "memory" | "sources" | "project-brain" | "report") => {
+    const result = await fetchWithTimeout(`${API_BASE_URL}/exports/${kind}`, {
+      cache: "no-store",
+    });
+    if (!result.ok) throw new Error(`Export ${kind} returned ${result.status}`);
+    exportJson(`helios-${kind}.json`, await result.json());
+  };
+
+  async function refreshMemoryItems() {
+    setMemoryBusy(true);
+    setMemoryStatus("Loading memory...");
+
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/memory`, {
+        cache: "no-store",
+      });
+
+      if (!result.ok) throw new Error(`Memory returned ${result.status}`);
+
+      const data = (await result.json()) as { items?: Array<Record<string, unknown>>; total?: number };
+      setMemoryItems(data.items ?? []);
+      setMemoryStatus(`${data.total ?? 0} conversation turns available for inspection.`);
+    } catch (error) {
+      setMemoryStatus(error instanceof Error ? error.message : "Unable to load memory.");
+    } finally {
+      setMemoryBusy(false);
+    }
+  }
+
+  const deleteMemoryItem = async (index: number) => {
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/memory/${index}`, {
+        method: "DELETE",
+      });
+
+      if (!result.ok) throw new Error(`Delete returned ${result.status}`);
+      await refreshMemoryItems();
+    } catch (error) {
+      setMemoryStatus(error instanceof Error ? error.message : "Unable to delete memory item.");
+    }
+  };
+
   const openMissionComposer = (module = activeModule, agent = selectedAgent.name, title = "") => {
     stopGeneration();
     setMessages(initialMessages);
@@ -1635,17 +2402,25 @@ export default function Home() {
     setMissionTitle(title);
     setMissionModule(module);
     setMissionAgent(agent);
+    setMissionScheduledAt("");
     setMissionOpen(true);
   };
 
-  const createMission = async (title = missionTitle, module = missionModule, agent = missionAgent) => {
+  const createMission = async (
+    title = missionTitle,
+    module = missionModule,
+    agent = missionAgent,
+    scheduledAt = missionScheduledAt,
+  ) => {
     const cleanTitle = title.trim();
     if (!cleanTitle || isCreatingMission) return;
 
     setIsCreatingMission(true);
 
     try {
-      const result = await fetchWithTimeout(`${API_BASE_URL}/missions`, {
+      const scheduledTimestamp = scheduledAt ? Date.parse(scheduledAt) / 1000 : null;
+      const isScheduled = scheduledTimestamp !== null && Number.isFinite(scheduledTimestamp);
+      const result = await fetchWithTimeout(`${API_BASE_URL}${isScheduled ? "/missions/schedule" : "/missions"}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1655,7 +2430,10 @@ export default function Home() {
           title: cleanTitle,
           module,
           agent,
-          detail: "Created from the premium HELIOS mission composer.",
+          detail: isScheduled
+            ? "Scheduled from the HELIOS mission composer."
+            : "Created from the premium HELIOS mission composer.",
+          ...(isScheduled ? { scheduled_at: scheduledTimestamp } : {}),
         }),
       });
 
@@ -1663,9 +2441,11 @@ export default function Home() {
 
       const data = (await result.json()) as MissionCreateResult;
 
-      setMissionEvents((current) => [...current, ...(data.events ?? [])].slice(-80));
-      setAgentActivity(data.agents ?? {});
-      if (data.mission?.id) {
+      if (!isScheduled) {
+        setMissionEvents((current) => [...current, ...(data.events ?? [])].slice(-80));
+        setAgentActivity(data.agents ?? {});
+      }
+      if (!isScheduled && data.mission?.id) {
         const summary = {
           id: data.mission.id,
           title: data.mission.title ?? cleanTitle,
@@ -1681,9 +2461,13 @@ export default function Home() {
       }
       setMissionOpen(false);
       setMissionTitle("");
+      setMissionScheduledAt("");
       switchModule(module);
       setActiveAgent(agent);
       setInput(cleanTitle);
+      if (isScheduled) {
+        setCommandStatus(`Mission scheduled for ${new Date((scheduledTimestamp as number) * 1000).toLocaleString()}.`);
+      }
     } catch {
       setRuntimeState("degraded");
     } finally {
@@ -1764,6 +2548,308 @@ export default function Home() {
     }
   };
 
+  const createAutonomousRun = async (objective = autonomyObjective) => {
+    if (!objective.trim() || autonomyBusy) return;
+
+    setAutonomyBusy(true);
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/autonomy/runs`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          objective: objective.trim(),
+        }),
+      });
+      if (!result.ok) throw new Error(`Autonomous run returned ${result.status}`);
+      const data = (await result.json()) as { run?: AutonomousRun };
+      if (data.run) setAutonomousRuns((current) => [data.run as AutonomousRun, ...current]);
+      setAutonomyObjective("");
+    } catch {
+      setRuntimeState("degraded");
+    } finally {
+      setAutonomyBusy(false);
+    }
+  };
+
+  const updateAutonomousRun = async (runId: string, action: "cancel" | "resume") => {
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/autonomy/runs/${runId}/${action}`, {
+        method: "POST",
+      });
+      if (!result.ok) throw new Error(`Autonomous ${action} returned ${result.status}`);
+      const data = (await result.json()) as { run?: AutonomousRun };
+      if (data.run) {
+        setAutonomousRuns((current) => current.map((run) => (run.id === runId ? data.run as AutonomousRun : run)));
+      }
+    } catch {
+      setRuntimeState("degraded");
+    }
+  };
+
+  const createIsolatedSwarmRun = async (objective = swarmObjective) => {
+    if (!objective.trim() || swarmBusy) return;
+    setSwarmBusy(true);
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/swarm/runs`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          objective: objective.trim(),
+          conversation_context: "Started from the Next.js Swarm Intelligence workspace.",
+        }),
+      });
+      if (!result.ok) throw new Error(`Swarm run returned ${result.status}`);
+      const data = (await result.json()) as { run?: IsolatedSwarmRun };
+      if (data.run) setIsolatedSwarmRuns((current) => [data.run as IsolatedSwarmRun, ...current]);
+      setSwarmObjective("");
+    } catch {
+      setRuntimeState("degraded");
+    } finally {
+      setSwarmBusy(false);
+    }
+  };
+
+  const runAutomaticCodeRepair = async () => {
+    const targets = codeRepairTargets
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (!codeRepairObjective.trim() || targets.length === 0 || codeRepairBusy) return;
+
+    setCodeRepairBusy(true);
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/code/repair/auto`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          objective: codeRepairObjective.trim(),
+          target_files: targets,
+          repair_attempts: 3,
+        }),
+      }, REQUEST_TIMEOUT_MS * 4);
+      if (!result.ok) throw new Error(`Code repair returned ${result.status}`);
+      const data = (await result.json()) as Record<string, unknown>;
+      const attempts = Array.isArray(data.attempts) ? data.attempts : [];
+      const latest = attempts.length > 0 ? attempts[attempts.length - 1] as { repair?: MissionArtifact["execution"] } : null;
+      setMissionArtifact({
+        kind: "code",
+        summary: data.status === "completed" ? "Automatic code repair completed and verified." : "Automatic code repair stopped with unresolved verification failures.",
+        target_files: targets,
+        execution: latest?.repair ?? {
+          mode: "general_code_repair",
+          blockers: Array.isArray(data.blockers) ? data.blockers as string[] : [],
+          commit_ready: Boolean(data.commit_ready),
+          action_required: Boolean(data.action_required),
+          next_actions: Array.isArray(data.next_actions) ? data.next_actions as string[] : [],
+        },
+      });
+      switchModule("code");
+    } catch {
+      setRuntimeState("degraded");
+    } finally {
+      setCodeRepairBusy(false);
+    }
+  };
+
+  const loadGitDiff = async (staged = false) => {
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/git/diff?staged=${staged ? "true" : "false"}`, {
+        cache: "no-store",
+      });
+      if (!result.ok) throw new Error(`Git diff returned ${result.status}`);
+      setGitDiffResult((await result.json()) as GitDiffResult);
+    } catch {
+      setRuntimeState("degraded");
+    }
+  };
+
+  const runGitOperation = async (
+    endpoint: "stage" | "branch" | "commit" | "push" | "rollback",
+    payload: Record<string, unknown>,
+    prompt: string,
+  ) => {
+    if (gitOperationBusy || !window.confirm(prompt)) return;
+    setGitOperationBusy(true);
+    setGitOperationStatus(`Running git ${endpoint}...`);
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/git/${endpoint}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...payload,
+          confirm: true,
+        }),
+      });
+      const data = (await result.json()) as {
+        status?: string;
+        reason?: string;
+        stdout?: string;
+        stderr?: string;
+      };
+      if (!result.ok) throw new Error(data.reason ?? `Git ${endpoint} returned ${result.status}`);
+      setGitOperationStatus(
+        [data.status, data.reason, data.stdout, data.stderr].filter(Boolean).join(" | ") || `Git ${endpoint} completed.`,
+      );
+      await loadGitDiff(endpoint === "stage");
+    } catch (error) {
+      setGitOperationStatus(error instanceof Error ? error.message : `Git ${endpoint} failed.`);
+      setRuntimeState("degraded");
+    } finally {
+      setGitOperationBusy(false);
+    }
+  };
+
+  const executeApprovedTool = async (payload: Record<string, unknown>) => {
+    const requestTool = async (approvalId?: string) => {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/tools/execute`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...payload,
+          ...(approvalId ? { approval_id: approvalId } : {}),
+        }),
+      }, REQUEST_TIMEOUT_MS * 20);
+      const data = (await result.json()) as {
+        status?: string;
+        result?: unknown;
+        error?: string;
+        detail?: string;
+        approval?: {
+          approval_id?: string;
+          status?: string;
+        };
+      };
+      if (!result.ok) throw new Error(data.detail ?? `Tool execution returned ${result.status}`);
+      return data;
+    };
+
+    const first = await requestTool();
+    if (first.status !== "approval_required") return first;
+
+    const approvalId = first.approval?.approval_id;
+    if (!approvalId) throw new Error("Approval was required but no approval id was returned.");
+
+    const approval = await fetchWithTimeout(`${API_BASE_URL}/approvals/${encodeURIComponent(approvalId)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        status: "approved",
+      }),
+    });
+    if (!approval.ok) throw new Error(`Approval returned ${approval.status}`);
+
+    return requestTool(approvalId);
+  };
+
+  const runTerminalCommand = async () => {
+    if (!terminalCommand.trim() || terminalBusy) return;
+    setTerminalBusy(true);
+    try {
+      const data = await executeApprovedTool({
+        tool: "run_command",
+        args: [terminalCommand.trim()],
+        module: "code",
+      });
+      setTerminalOutput(typeof data.result === "string" ? data.result : JSON.stringify(data.result ?? data.error ?? "", null, 2));
+    } catch {
+      setTerminalOutput("Terminal command failed.");
+    } finally {
+      setTerminalBusy(false);
+    }
+  };
+
+  const deployProject = async () => {
+    if (!window.confirm("Deploy HELIOS from origin/main and rebuild the production containers?")) return;
+    try {
+      const data = await executeApprovedTool({
+        tool: "deploy_project",
+        args: [],
+        module: "dashboard",
+      }) as { status?: string; result?: { stdout?: string; error?: string }; detail?: string };
+      setCommandStatus(`Deployment ${data.status ?? "triggered"}: ${data.result?.stdout || data.result?.error || ""}`);
+      setDeployOpen(false);
+    } catch (error) {
+      setCommandStatus(error instanceof Error ? error.message : "Deployment failed.");
+    }
+  };
+
+  const recoverActiveMission = async () => {
+    if (!activeMission) return;
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/missions/${activeMission.id}/recover`, {
+        method: "POST",
+      });
+      if (!result.ok) throw new Error(`Mission recovery returned ${result.status}`);
+      const data = (await result.json()) as MissionAdvanceResult & { checkpoint?: MissionArtifact };
+      setMissions(data.missions ?? []);
+      setAgentActivity(data.agents ?? {});
+      setMissionArtifact(data.checkpoint ?? missionArtifact);
+    } catch {
+      setRuntimeState("degraded");
+    }
+  };
+
+  const exportActiveMission = async () => {
+    if (!activeMission) return;
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/missions/${activeMission.id}/export`, {
+        cache: "no-store",
+      });
+      if (!result.ok) throw new Error(`Mission export returned ${result.status}`);
+      const payload = await result.text();
+      const blob = new Blob([payload], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${activeMission.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase() || "mission"}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setRuntimeState("degraded");
+    }
+  };
+
+  const refreshExecutionEvents = async () => {
+    const result = await fetchWithTimeout(`${API_BASE_URL}/execution/events?limit=40&event_type=tool_event`, {
+      cache: "no-store",
+    });
+    if (!result.ok) throw new Error(`Execution log returned ${result.status}`);
+    const data = (await result.json()) as ExecutionEventsResult;
+    setRunLedger((data.events ?? []).map((event) => normalizeRunLedgerEvent(event as unknown as Record<string, unknown>)).reverse());
+  };
+
+  const retrySelectedExecution = async () => {
+    if (!selectedExecution?.tool) return;
+    const input = selectedExecution.input as { args?: unknown[]; kwargs?: Record<string, unknown> } | undefined;
+    const result = await fetchWithTimeout(`${API_BASE_URL}/tools/execute`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tool: selectedExecution.tool,
+        args: input?.args ?? [],
+        kwargs: input?.kwargs ?? {},
+        module: selectedExecution.module ?? "dashboard",
+        confirm: true,
+      }),
+    });
+    if (!result.ok) throw new Error(`Tool retry returned ${result.status}`);
+    await refreshExecutionEvents();
+  };
+
   const runLauncherCommand = async (command: CommandDefinition) => {
     if (runningCommandId) return;
 
@@ -1797,6 +2883,41 @@ export default function Home() {
         const title = commandQuery.trim() || "Run bounded code verification";
         await createMission(title, "code", "Vega");
         setCommandStatus("Code mission created.");
+        setCommandOpen(false);
+        return;
+      }
+
+      if (command.id === "mission:recover") {
+        await recoverActiveMission();
+        setCommandStatus("Active mission recovered from its latest checkpoint.");
+        setCommandOpen(false);
+        return;
+      }
+
+      if (command.id === "mission:export") {
+        await exportActiveMission();
+        setCommandStatus("Active mission exported.");
+        setCommandOpen(false);
+        return;
+      }
+
+      if (command.id === "autonomy:queue") {
+        await createAutonomousRun(commandQuery.trim());
+        setCommandStatus("Autonomous run queued.");
+        setCommandOpen(false);
+        return;
+      }
+
+      if (command.id === "swarm:queue") {
+        await createIsolatedSwarmRun(commandQuery.trim());
+        setCommandStatus("Isolated swarm queued.");
+        setCommandOpen(false);
+        return;
+      }
+
+      if (command.id === "code:auto") {
+        switchModule("code");
+        setCommandStatus("Use the repair objective and target files in the Code workspace.");
         setCommandOpen(false);
         return;
       }
@@ -1852,19 +2973,11 @@ export default function Home() {
         const argsText = rawArgs.join(" ").trim();
         const args = argsText ? JSON.parse(argsText) : [];
         if (!Array.isArray(args)) throw new Error("Tool arguments must be a JSON array.");
-        const result = await fetchWithTimeout(`${API_BASE_URL}/tools/execute`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            tool: toolName,
-            args,
-            module: activeModule,
-          }),
-        });
-        if (!result.ok) throw new Error(`Tool execution returned ${result.status}`);
-        const data = (await result.json()) as { events?: RunLedgerEvent[]; status?: string };
+        const data = await executeApprovedTool({
+          tool: toolName,
+          args,
+          module: activeModule,
+        }) as { events?: RunLedgerEvent[]; status?: string; result?: { reason?: string } };
         const events = (data.events ?? []).map((event) => normalizeRunLedgerEvent(event as unknown as Record<string, unknown>));
         setRunLedger((current) => [...events.reverse(), ...current].slice(0, RUN_LEDGER_MAX_ENTRIES));
         setCommandStatus(`${toolName} ${data.status ?? "completed"}.`);
@@ -1922,6 +3035,31 @@ export default function Home() {
         return;
       }
 
+      if (command.id === "git:stage") {
+        const paths = commandQuery.split(",").map((path) => path.trim()).filter(Boolean);
+        await runGitOperation("stage", { paths }, `Stage ${paths.length} selected path(s)?`);
+        setCommandOpen(false);
+        return;
+      }
+
+      if (command.id === "git:branch") {
+        await runGitOperation("branch", { name: commandQuery.trim() }, `Create and switch to branch "${commandQuery.trim()}"?`);
+        setCommandOpen(false);
+        return;
+      }
+
+      if (command.id === "git:push") {
+        await runGitOperation("push", { branch: commandQuery.trim(), remote: "origin" }, `Push "${commandQuery.trim()}" to origin?`);
+        setCommandOpen(false);
+        return;
+      }
+
+      if (command.id === "git:rollback") {
+        await runGitOperation("rollback", { commit: commandQuery.trim() }, `Create a revert commit for ${commandQuery.trim()}?`);
+        setCommandOpen(false);
+        return;
+      }
+
       if (command.id === "open:swarm") switchModule("swarm");
       if (command.id === "open:memory") setMemoryOpen(true);
       if (command.id === "open:voice") switchModule("voice");
@@ -1929,7 +3067,26 @@ export default function Home() {
         switchModule("knowledge");
         fileInputRef.current?.click();
       }
+      if (command.id === "source:url") switchModule("knowledge");
+      if (command.id === "voice:fallback") {
+        switchModule("voice");
+        setVoiceTranscriptOpen(true);
+      }
+      if (command.id.startsWith("mode:")) {
+        const mode = command.id.slice(5) as ConversationMode;
+        setConversationMode(mode);
+      }
       if (command.id === "thread:export") exportThread();
+      if (command.id === "export:memory") await exportProjectData("memory");
+      if (command.id === "export:sources") await exportProjectData("sources");
+      if (command.id === "export:brain") await exportProjectData("project-brain");
+      if (command.id === "export:report") await exportProjectData("report");
+
+      if (command.id === "deploy:project") {
+        setDeployOpen(true);
+        setCommandOpen(false);
+        return;
+      }
 
       setCommandStatus(`${command.label} completed.`);
       setCommandOpen(false);
@@ -1951,11 +3108,100 @@ export default function Home() {
     requestRef.current = controller;
 
     try {
-      const result = await fetch(`${API_BASE_URL}/chat`, {
+      const streamed = await new Promise<boolean>((resolve, reject) => {
+        let socket: WebSocket | null = null;
+        let receivedDelta = false;
+        let completed = false;
+        const closeSocket = () => {
+          if (socket && socket.readyState <= WebSocket.OPEN) socket.close();
+          socket = null;
+        };
+        const abortStreaming = () => {
+          closeSocket();
+          reject(new Error("Streaming chat was stopped."));
+        };
+
+        controller.signal.addEventListener("abort", abortStreaming, { once: true });
+
+        try {
+          socket = new WebSocket(CHAT_WS_URL);
+        } catch (error) {
+          controller.signal.removeEventListener("abort", abortStreaming);
+          reject(error);
+          return;
+        }
+
+        socket.addEventListener("open", () => {
+          socket?.send(JSON.stringify({
+            message: text || "Attached files",
+            module: activeModuleConfig.key,
+            agent: selectedAgent.name,
+            mode: conversationMode,
+            attachments: uploadedFiles,
+            stream: true,
+          }));
+        });
+
+        socket.addEventListener("message", (event) => {
+          try {
+            const payload = JSON.parse(event.data) as { type?: string; delta?: string; response?: string; trace?: CognitiveTrace[]; plan?: PlanStep[] };
+
+            if (payload.type === "chat.delta" && typeof payload.delta === "string") {
+              receivedDelta = true;
+              setMessages((current) =>
+                current.map((message) => (message.id === replyId ? { ...message, text: `${message.text}${payload.delta}` } : message)),
+              );
+            }
+
+            if (payload.type === "chat.done") {
+              completed = true;
+              setLastTrace(payload.trace ?? []);
+              setLastPlan(payload.plan ?? []);
+              setLastRunAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+              setRuntimeState("online");
+              controller.signal.removeEventListener("abort", abortStreaming);
+              closeSocket();
+              resolve(true);
+            }
+          } catch {
+            if (typeof event.data === "string") {
+              receivedDelta = true;
+              setMessages((current) =>
+                current.map((message) => (message.id === replyId ? { ...message, text: `${message.text}${event.data}` } : message)),
+              );
+            }
+          }
+        });
+
+        socket.addEventListener("error", () => {
+          controller.signal.removeEventListener("abort", abortStreaming);
+          reject(new Error("Streaming chat socket failed."));
+        });
+
+        socket.addEventListener("close", () => {
+          controller.signal.removeEventListener("abort", abortStreaming);
+          if (!completed && !receivedDelta) reject(new Error("Streaming chat socket closed before response."));
+          else if (!completed) resolve(receivedDelta);
+        });
+      });
+
+      if (streamed) {
+        window.clearTimeout(timeout);
+        requestRef.current = null;
+        setIsGenerating(false);
+        return;
+      }
+    } catch {
+      setMessages((current) =>
+        current.map((message) => (message.id === replyId ? { ...message, text: "" } : message)),
+      );
+    }
+
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/chat`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(HELIOS_API_KEY ? { "x-helios-api-key": HELIOS_API_KEY } : {}),
         },
         body: JSON.stringify({
           message: text || "Attached files",
@@ -2053,6 +3299,54 @@ export default function Home() {
     const cleanText = text.trim();
     if (!cleanText) return;
     setVoiceTurns((current) => [...current.slice(-7), { id: idRef.current++, role, text: cleanText }]);
+    void fetchWithTimeout(`${API_BASE_URL}/voice/transcripts`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        role,
+        text: cleanText,
+        session_id: "frontend-realtime",
+      }),
+    }).catch(() => undefined);
+  };
+
+  const runVoiceFallback = async () => {
+    const text = voiceFallbackText.trim();
+    if (!text || voiceFallbackBusy) return;
+    setVoiceFallbackBusy(true);
+    setVoiceError("");
+    addVoiceTurn("you", text);
+    setVoiceFallbackText("");
+    try {
+      const result = await fetchWithTimeout(`${API_BASE_URL}/voice/fallback`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          text,
+          mode: conversationMode,
+          session_id: "frontend-fallback",
+        }),
+      });
+      const data = (await result.json()) as { response?: string; detail?: string };
+      if (!result.ok || !data.response) throw new Error(data.detail ?? `Voice fallback returned ${result.status}`);
+      addVoiceTurn("helios", data.response);
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(data.response);
+        utterance.rate = conversationMode === "concise" ? 1.05 : 0.98;
+        window.speechSynthesis.speak(utterance);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Voice fallback failed.";
+      setVoiceError(message);
+      addVoiceTurn("system", message);
+    } finally {
+      setVoiceFallbackBusy(false);
+    }
   };
 
   const startRealtimeVoice = async () => {
@@ -2129,12 +3423,11 @@ export default function Home() {
       const offer = await peerConnection.createOffer();
       await peerConnection.setLocalDescription(offer);
 
-      const sessionResponse = await fetch(`${API_BASE_URL}/realtime/session`, {
+      const sessionResponse = await fetchWithTimeout(`${API_BASE_URL}/realtime/session`, {
         method: "POST",
         body: offer.sdp,
         headers: {
           "Content-Type": "application/sdp",
-          ...(HELIOS_API_KEY ? { "x-helios-api-key": HELIOS_API_KEY } : {}),
         },
       });
 
@@ -2180,9 +3473,9 @@ export default function Home() {
               {voiceState === "idle"
                 ? voiceStatusInfo?.realtime_available
                   ? "Start a realtime speech session and talk naturally."
-                  : "Realtime voice needs OPENAI_API_KEY configured on the backend."
+                  : "Realtime voice is unavailable, but the provider-independent fallback is ready."
                 : voiceState === "error"
-                  ? "The realtime bridge needs an OpenAI API key and backend access."
+                  ? "Use the fallback below or retry the realtime bridge."
                   : "Talk normally. Interrupt whenever you need to."}
             </p>
             <div className="voice-readiness">
@@ -2219,6 +3512,27 @@ export default function Home() {
             </button>
           </div>
 
+          <form
+            className="voice-fallback"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void runVoiceFallback();
+            }}
+          >
+            <div>
+              <p className="section-label">Provider-Independent Fallback</p>
+              <span>Type a voice turn and HELIOS will respond through the configured model route with browser speech playback.</span>
+            </div>
+            <input
+              value={voiceFallbackText}
+              placeholder="Ask HELIOS to speak..."
+              onChange={(event) => setVoiceFallbackText(event.target.value)}
+            />
+            <button type="submit" disabled={!voiceFallbackText.trim() || voiceFallbackBusy}>
+              {voiceFallbackBusy ? "Speaking..." : "Speak reply"}
+            </button>
+          </form>
+
           <aside className={`voice-transcript ${voiceTranscriptOpen ? "open" : ""}`}>
             <div>
               <p className="section-label">Transcript</p>
@@ -2240,215 +3554,268 @@ export default function Home() {
     if (activeModule === "dashboard") {
       return (
         <div className="command-runtime">
-          <section className="spatial-command-field" aria-label="HELIOS 3D command field">
-            <div className="spatial-copy">
-              <p className="section-label">Mission Field</p>
-              <h3>Good evening, Sharveesh.</h3>
-              <span>{intelligenceStatus} • {selectedAgent.name} • {activeModuleConfig.title}</span>
-              <div className="mission-launch-row" aria-label="Mission presets">
-                {[
-                  { label: "Research", module: "research" as ModuleKey, agent: "Nova" },
-                  { label: "Build", module: "code" as ModuleKey, agent: "Vega" },
-                  { label: "Plan", module: "planning" as ModuleKey, agent: "Orion" },
-                  { label: "Analyze", module: "analytics" as ModuleKey, agent: "Orion" },
-                  { label: "Monitor", module: "swarm" as ModuleKey, agent: "Orion" },
-                ].map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => launchMissionPreset(`${preset.label} mission`, preset.module, preset.agent)}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-              {latestMission && (
-                <div className="mission-now">
-                  <b>{latestMission.stage}</b>
-                  <span>{latestMission.title}</span>
-                </div>
-              )}
-              {activeMission && (
-                <div className="mission-control-strip">
-                  <div>
-                    <p className="section-label">Active Mission</p>
-                    <strong>{activeMission.title}</strong>
-                    <span>{[activeMission.stage, activeMission.agent, activeMission.module].filter(Boolean).join(" • ")}</span>
-                  </div>
-                  <div className="mission-stage-actions">
+          {activeTab === "Overview" && (
+            <section className="spatial-command-field" aria-label="HELIOS 3D command field">
+              <div className="spatial-copy">
+                <p className="section-label">Mission Field</p>
+                <h3>Good evening, Sharveesh.</h3>
+                <span>{intelligenceStatus} • {selectedAgent.name} • {activeModuleConfig.title}</span>
+                <div className="mission-launch-row" aria-label="Mission presets">
+                  {[
+                    { label: "Research", module: "research" as ModuleKey, agent: "Nova" },
+                    { label: "Build", module: "code" as ModuleKey, agent: "Vega" },
+                    { label: "Plan", module: "planning" as ModuleKey, agent: "Orion" },
+                    { label: "Analyze", module: "analytics" as ModuleKey, agent: "Orion" },
+                    { label: "Monitor", module: "swarm" as ModuleKey, agent: "Orion" },
+                  ].map((preset) => (
                     <button
+                      key={preset.label}
                       type="button"
-                      disabled={advancingMissionStage.length > 0}
-                      onClick={() => void runMissionWorkflow()}
+                      onClick={() => launchMissionPreset(`${preset.label} mission`, preset.module, preset.agent)}
                     >
-                      {advancingMissionStage === "Run" ? "..." : "Run"}
+                      {preset.label}
                     </button>
-                    {["Executed", "Reviewed", "Archived"].map((stage) => (
+                  ))}
+                </div>
+                {latestMission && (
+                  <div className="mission-now">
+                    <b>{latestMission.stage}</b>
+                    <span>{latestMission.title}</span>
+                  </div>
+                )}
+                {activeMission && (
+                  <div className="mission-control-strip">
+                    <div>
+                      <p className="section-label">Active Mission</p>
+                      <strong>{activeMission.title}</strong>
+                      <span>{[activeMission.stage, activeMission.agent, activeMission.module].filter(Boolean).join(" • ")}</span>
+                    </div>
+                    <div className="mission-stage-actions">
                       <button
-                        key={stage}
                         type="button"
-                        disabled={advancingMissionStage.length > 0 || activeMission.stage === stage}
-                        onClick={() => void advanceMission(stage)}
+                        disabled={advancingMissionStage.length > 0}
+                        onClick={() => void runMissionWorkflow()}
                       >
-                        {advancingMissionStage === stage ? "..." : stage}
+                        {advancingMissionStage === "Run" ? "..." : "Run"}
+                      </button>
+                      {["Executed", "Reviewed", "Archived"].map((stage) => (
+                        <button
+                          key={stage}
+                          type="button"
+                          disabled={advancingMissionStage.length > 0 || activeMission.stage === stage}
+                          onClick={() => void advanceMission(stage)}
+                        >
+                          {advancingMissionStage === stage ? "..." : stage}
+                        </button>
+                      ))}
+                      <button type="button" onClick={() => void recoverActiveMission()}>
+                        Recover
+                      </button>
+                      <button type="button" onClick={() => void exportActiveMission()}>
+                        Export
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <section className="mission-artifact-panel" aria-label="AI provider settings">
+                  <div>
+                    <p className="section-label">AI provider preferences</p>
+                    <strong>Choose the preferred provider and model route</strong>
+                    <span>These values are saved in the backend settings file and used on the next health refresh.</span>
+                  </div>
+                  <div className="settings-grid">
+                    <label>
+                      <span>Provider</span>
+                      <select value={aiSettingsProvider} onChange={(event) => setAiSettingsProvider(event.target.value)}>
+                        {(Object.keys(health?.ai?.providers ?? {}).length > 0
+                          ? Object.keys(health?.ai?.providers ?? {})
+                          : ["ollama", "gemini"])
+                          .map((provider) => (
+                            <option key={provider} value={provider}>{provider}</option>
+                          ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Model override</span>
+                      <input
+                        value={aiSettingsModel}
+                        placeholder="qwen2.5:3b or gemini-1.5-flash"
+                        onChange={(event) => setAiSettingsModel(event.target.value)}
+                        list="ai-model-options"
+                      />
+                      {availableProviderModels.length > 0 && (
+                        <small>Detected models: {availableProviderModels.join(", ")}</small>
+                      )}
+                    </label>
+                  </div>
+                  <datalist id="ai-model-options">
+                    {(availableProviderModels.length > 0 ? availableProviderModels : ["qwen2.5:3b", "gemini-1.5-flash"]).map((option) => (
+                      <option key={option} value={option} />
+                    ))}
+                  </datalist>
+                  <div className="settings-actions">
+                    <button type="button" onClick={() => void saveAiSettings()} disabled={aiSettingsBusy}>
+                      {aiSettingsBusy ? "Saving..." : "Save preference"}
+                    </button>
+                    <span>{aiSettingsStatus}</span>
+                  </div>
+                </section>
+
+                {latestArtifact && (
+                  <div className="mission-artifact-panel">
+                    <div>
+                      <p className="section-label">{latestArtifact.kind ?? "Artifact"}</p>
+                      <strong>{latestArtifact.summary ?? "Mission artifact ready."}</strong>
+                      {missionTask && <span>{missionTask.status} • {missionTask.progress ?? 0}%</span>}
+                    </div>
+                    {latestArtifact.evidence && latestArtifact.evidence.length > 0 && (
+                      <div className="artifact-evidence-list">
+                        {latestArtifact.evidence.slice(0, 3).map((item, index) => (
+                          <article key={`${item.name}-${index}`}>
+                            <b>{item.name ?? "Source"}</b>
+                            <span>{item.snippet ?? "No snippet available."}</span>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="holo-city" aria-hidden="true">
+                {Array.from({ length: 24 }, (_, index) => (
+                  <i
+                    key={index}
+                    style={{
+                      "--x": `${(index % 8) * 12 - 42}px`,
+                      "--z": `${Math.floor(index / 8) * 34 - 36}px`,
+                      "--h": `${34 + ((index * 23 + runtimeTick * 3) % 92)}px`,
+                      "--delay": `${index * 80}ms`,
+                    } as CSSProperties}
+                  />
+                ))}
+                <b>HELIOS</b>
+              </div>
+            </section>
+          )}
+
+          {activeTab === "Activity" && (
+            <div className="activity-view">
+              <section className="mission-timeline-board">
+                <div className="feature-heading">
+                  <p className="section-label">Mission Timeline</p>
+                  <strong>{health?.missions?.total_events ?? missionEvents.length} events</strong>
+                </div>
+                <div className="mission-stage-rail">
+                  {missionTimelineItems.map((event, index) => (
+                    <article className={`mission-stage stage-${event.stage.toLowerCase()}`} key={event.id}>
+                      <span>{index + 1}</span>
+                      <b>{event.stage}</b>
+                      <strong>{event.title}</strong>
+                      <small>{[event.agent, event.module, event.status].filter(Boolean).join(" • ")}</small>
+                    </article>
+                  ))}
+                </div>
+              </section>
+              <section className="agent-conflict-log">
+                <div className="feature-heading">
+                  <p className="section-label">Autonomous Execution Log</p>
+                  <strong>Retries, conflict, approval gates</strong>
+                </div>
+                {agentTimeline.map((event) => (
+                  <article className={`conflict-row ${event.risk}`} key={`${event.actor}-${event.status}`}>
+                    <b>{event.actor}</b>
+                    <span>{event.status}</span>
+                    <p>{event.detail}</p>
+                  </article>
+                ))}
+              </section>
+            </div>
+          )}
+
+          {activeTab === "Plugins" && (
+            <div className="plugins-view">
+              <section className="plugins-grid">
+                <div className="feature-heading">
+                  <p className="section-label">HELIOS Plugin Marketplace</p>
+                  <strong>{plugins.length} active extensions</strong>
+                </div>
+                <form
+                  className="plugin-upload-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void uploadPlugin();
+                  }}
+                >
+                  <input placeholder="Plugin name" value={pluginName} onChange={(event) => setPluginName(event.target.value)} />
+                  <input placeholder="Version" value={pluginVersion} onChange={(event) => setPluginVersion(event.target.value)} />
+                  <input placeholder="Description" value={pluginDescription} onChange={(event) => setPluginDescription(event.target.value)} />
+                  <textarea
+                    placeholder={"def register_plugin(registry):\n    registry['my_tool'] = lambda: 'ready'"}
+                    value={pluginCode}
+                    onChange={(event) => setPluginCode(event.target.value)}
+                  />
+                  <button type="submit" disabled={!pluginName.trim() || !pluginCode.trim()}>Upload signed plugin</button>
+                </form>
+                {pluginStatus && <span className="plugin-status">{pluginStatus}</span>}
+                <div className="plugin-list">
+                  {plugins.length > 0 ? (
+                    plugins.map((plugin) => (
+                      <article className="plugin-card" key={plugin.filename}>
+                        <span className="plugin-mark">P</span>
+                        <div>
+                          <b>{plugin.name}</b>
+                          <span>{plugin.version ?? "unversioned"} / {plugin.filename}</span>
+                          <small>{plugin.description || `${plugin.isolation ?? "legacy"} / ${plugin.verified ? "verified" : "unverified"}`}</small>
+                        </div>
+                        <button type="button" onClick={() => void removePlugin(plugin)}>Uninstall</button>
+                      </article>
+                    ))
+                  ) : (
+                    <div className="plugin-empty">
+                      <b>No custom plugins loaded.</b>
+                      <span>Add .py files to backend/plugins to extend HELIOS.</span>
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
+          )}
+
+          {activeTab === "Launchpad" && (
+            <div className="launchpad-view">
+              <section className="orchestration-theater">
+                <div className="feature-heading">
+                  <p className="section-label">Cognitive Operations</p>
+                  <strong>{intelligenceStatus}</strong>
+                </div>
+                <div className="flow-line">
+                  {orchestrationFlow.map((node, index) => (
+                    <article className={`flow-node ${node.tone}`} key={node.agent}>
+                      <span>{index + 1}</span>
+                      <b>{node.agent}</b>
+                      <strong>{node.state}</strong>
+                      <small>{node.detail}</small>
+                    </article>
+                  ))}
+                </div>
+              </section>
+              <div className="runtime-lower-grid">
+                <section className="agent-radar">
+                  <div className="radar-field">
+                    <div className="radar-core">
+                      <b>HELIOS</b>
+                    </div>
+                    {agentRadar.map((agent, index) => (
+                      <button className={`radar-agent radar-agent-${index + 1} ${agent.state}`} key={agent.name} type="button">
+                        <b>{agent.name}</b>
+                        <span>{agent.orbit}</span>
                       </button>
                     ))}
                   </div>
-                </div>
-              )}
-              {latestArtifact && (
-                <div className="mission-artifact-panel">
-                  <div>
-                    <p className="section-label">{latestArtifact.kind ?? "Artifact"}</p>
-                    <strong>{latestArtifact.summary ?? "Mission artifact ready."}</strong>
-                    {missionTask && <span>{missionTask.status} • {missionTask.progress ?? 0}%</span>}
-                  </div>
-                  {latestArtifact.evidence && latestArtifact.evidence.length > 0 && (
-                    <div className="artifact-evidence-list">
-                      {latestArtifact.evidence.slice(0, 3).map((item, index) => (
-                        <article key={`${item.name}-${index}`}>
-                          <b>{item.name ?? "Source"}</b>
-                          <span>{item.snippet ?? "No snippet available."}</span>
-                        </article>
-                      ))}
-                    </div>
-                  )}
-                  {(!latestArtifact.evidence || latestArtifact.evidence.length === 0) && artifactHighlights.length > 0 && (
-                    <div className="artifact-evidence-list">
-                      {artifactHighlights.map((item, index) => (
-                        <article key={`${item.label}-${index}`}>
-                          <b>{item.label}</b>
-                          <span>{item.value}</span>
-                        </article>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="holo-city" aria-hidden="true">
-              {Array.from({ length: 24 }, (_, index) => (
-                <i
-                  key={index}
-                  style={{
-                    "--x": `${(index % 8) * 12 - 42}px`,
-                    "--z": `${Math.floor(index / 8) * 34 - 36}px`,
-                    "--h": `${34 + ((index * 23 + runtimeTick * 3) % 92)}px`,
-                    "--delay": `${index * 80}ms`,
-                  } as CSSProperties}
-                />
-              ))}
-              <b>HELIOS</b>
-            </div>
-          </section>
-
-          <section className="mission-timeline-board">
-            <div className="feature-heading">
-              <p className="section-label">Mission Timeline</p>
-              <strong>{health?.missions?.total_events ?? missionEvents.length} events</strong>
-            </div>
-            <div className="mission-stage-rail">
-              {missionTimelineItems.map((event, index) => (
-                <article className={`mission-stage stage-${event.stage.toLowerCase()}`} key={event.id}>
-                  <span>{index + 1}</span>
-                  <b>{event.stage}</b>
-                  <strong>{event.title}</strong>
-                  <small>{[event.agent, event.module, event.status].filter(Boolean).join(" • ")}</small>
-                </article>
-              ))}
-            </div>
-          </section>
-
-          <section className="orchestration-theater">
-            <div className="feature-heading">
-              <p className="section-label">Cognitive Operations</p>
-              <strong>{intelligenceStatus}</strong>
-            </div>
-            <div className="flow-line">
-              {orchestrationFlow.map((node, index) => (
-                <article className={`flow-node ${node.tone}`} key={node.agent}>
-                  <span>{index + 1}</span>
-                  <b>{node.agent}</b>
-                  <strong>{node.state}</strong>
-                  <small>{node.detail}</small>
-                </article>
-              ))}
-            </div>
-          </section>
-
-          <section className="telemetry-board">
-            <div className="feature-heading">
-              <p className="section-label">Computational Tension</p>
-              <strong>{runtimeState === "online" ? "Live pressure" : "Degraded feed"}</strong>
-            </div>
-            <div className="telemetry-graph">
-              {telemetryPoints.map((point, index) => (
-                <span
-                  className={point.anomaly ? "anomaly" : ""}
-                  key={`${point.stamp}-${index}`}
-                  style={{ height: `${point.height}px` }}
-                >
-                  <i>{point.stamp}</i>
-                </span>
-              ))}
-            </div>
-          </section>
-
-          <div className="runtime-lower-grid">
-            <section className="agent-radar">
-            <div className="feature-heading">
-              <p className="section-label">Live Agent Radar</p>
-              <strong>{agentRadar.filter((agent) => agent.state !== "standby").length} signals</strong>
-            </div>
-            <div className="radar-field">
-              <div className="radar-core">
-                <b>HELIOS</b>
-                <span>{runtimeState}</span>
+                </section>
               </div>
-              {agentRadar.map((agent, index) => (
-                <button
-                  className={`radar-agent radar-agent-${index + 1} ${agent.state}`}
-                  key={agent.name}
-                  type="button"
-                  onClick={() => setActiveAgent(agent.name)}
-                >
-                  <b>{agent.name}</b>
-                  <span>{agent.orbit}</span>
-                </button>
-              ))}
             </div>
-            </section>
-
-            <section className="system-pulse cost-panel">
-            <div className="feature-heading">
-              <p className="section-label">Cost of Intelligence</p>
-              <strong>{modelName}</strong>
-            </div>
-            <div className="pulse-grid">
-              {intelligenceCosts.map((item) => (
-                <div className={`pulse-cell ${item.tone}`} key={item.label}>
-                  <span>{item.label}</span>
-                  <b>{item.value}</b>
-                  <i />
-                </div>
-              ))}
-            </div>
-            </section>
-          </div>
-
-          <section className="agent-conflict-log">
-            <div className="feature-heading">
-              <p className="section-label">Autonomous Execution Log</p>
-              <strong>Retries, conflict, approval gates</strong>
-            </div>
-            {agentTimeline.map((event) => (
-              <article className={`conflict-row ${event.risk}`} key={`${event.actor}-${event.status}`}>
-                <b>{event.actor}</b>
-                <span>{event.status}</span>
-                <p>{event.detail}</p>
-              </article>
-            ))}
-          </section>
+          )}
         </div>
       );
     }
@@ -2466,7 +3833,7 @@ export default function Home() {
               { label: "Events", value: observability?.window?.events_analyzed ?? 0 },
               { label: "Completed", value: observability?.window?.completed_events ?? 0 },
               { label: "Avg ms", value: observability?.rates?.average_duration_ms ?? 0 },
-              { label: "Max ms", value: observability?.rates?.max_duration_ms ?? 0 },
+              { label: "P95 ms", value: observability?.latency_percentiles?.p95_ms ?? 0 },
             ].map((item) => (
               <article key={item.label}>
                 <span>{item.label}</span>
@@ -2495,6 +3862,21 @@ export default function Home() {
               <div>
                 <b>No recent failures</b>
                 <span>Ledger looks stable in the current window.</span>
+              </div>
+            )}
+          </section>
+          <section className="observability-panel traces">
+            <p className="section-label">Distributed Trace Groups</p>
+            {(observability?.traces ?? []).slice(-6).reverse().map((trace) => (
+              <div key={trace.trace_id}>
+                <b>{trace.trace_id}</b>
+                <span>{trace.events} events / {trace.duration_ms} ms / {trace.failed} failed / {(trace.tools ?? []).join(", ")}</span>
+              </div>
+            ))}
+            {(!observability?.traces || observability.traces.length === 0) && (
+              <div>
+                <b>No trace groups yet</b>
+                <span>Tool events will be grouped by parent or trace identifier.</span>
               </div>
             )}
           </section>
@@ -2558,10 +3940,35 @@ export default function Home() {
             </div>
           </section>
 
+          <section className="source-graph-panel">
+            <div className="feature-heading">
+              <p className="section-label">Source Intelligence Graph</p>
+              <strong>{researchGraph?.nodes?.length ?? 0} nodes / {researchGraph?.links?.length ?? 0} links</strong>
+            </div>
+            <GraphMap
+              nodes={researchGraph?.nodes ?? []}
+              links={researchGraph?.links ?? []}
+              selectedId={selectedSourceGraphNode?.id}
+              onSelect={setSelectedSourceGraphNode}
+              label="Source Intelligence citation and claim graph"
+            />
+            <div className="graph-selection">
+              <b>{selectedSourceGraphNode?.label ?? "Select a source, claim, or query node"}</b>
+              <span>{selectedSourceGraphNode?.detail ?? selectedSourceGraphNode?.kind ?? "Explore how evidence grounds claims."}</span>
+            </div>
+          </section>
+
           <section className="research-briefing-panel">
             <p className="section-label">Briefing</p>
             <h4>{researchIsGrounded ? "Source-grounded answer" : researchArtifact?.kind ? "Artifact ready" : "Awaiting citations"}</h4>
             <span>{researchGroundedAnswer ?? researchArtifact?.summary ?? "Create or select a Research mission, then run it from this workspace."}</span>
+            <div className={`grounding-contract ${researchIsGrounded ? "enforced" : "waiting"}`}>
+              <b>{researchEnforcement?.policy ?? "cite_or_refuse"}</b>
+              <span>
+                {Math.round(((researchEnforcement?.coverage_ratio ?? (researchCoverage as { coverage_ratio?: number } | null)?.coverage_ratio ?? 0) as number) * 100)}%
+                {" "}coverage / minimum {Math.round(((researchEnforcement?.minimum_coverage_ratio ?? (researchCoverage as { minimum_coverage_ratio?: number } | null)?.minimum_coverage_ratio ?? 0.5) as number) * 100)}%
+              </span>
+            </div>
             {researchClaims.length > 0 && (
               <div className="citation-claims">
                 {researchClaims.slice(0, 3).map((claim, index) => (
@@ -2607,11 +4014,39 @@ export default function Home() {
             <p className="section-label">Patch Intelligence</p>
             <h4>{codeArtifact?.execution?.commit_ready ? "Patch ready for review" : codeArtifact ? "Code workflow captured" : "Awaiting code mission"}</h4>
             <span>{codeArtifact?.summary ?? "Run a Code mission to identify files, apply bounded edits, and capture verification logs."}</span>
+            <form
+              className="code-repair-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void runAutomaticCodeRepair();
+              }}
+            >
+              <input
+                placeholder="Repair objective"
+                value={codeRepairObjective}
+                onChange={(event) => setCodeRepairObjective(event.target.value)}
+              />
+              <input
+                placeholder="Target files, comma separated"
+                value={codeRepairTargets}
+                onChange={(event) => setCodeRepairTargets(event.target.value)}
+              />
+              <button type="submit" disabled={!codeRepairObjective.trim() || !codeRepairTargets.trim() || codeRepairBusy}>
+                {codeRepairBusy ? "Repairing..." : "Edit, test, retry"}
+              </button>
+            </form>
             <div className="code-terminal">
               <code>{codeVerificationRows[0]?.command ?? "git status --short"}</code>
               <b>{codeVerificationRows[0]?.status ?? "waiting"}</b>
               <span>{codeVerificationRows[0]?.output ?? "Execution output will stream through the run ledger."}</span>
             </div>
+            {codeArtifact?.execution?.verification_health && (
+              <div className="code-terminal compact-terminal">
+                <code>verification health</code>
+                <b>{`${codeArtifact.execution.verification_health.passed ?? 0}/${codeArtifact.execution.verification_health.total ?? 0} passed`}</b>
+                <span>{codeArtifact.execution.verification_health.failed_commands?.join(", ") || "No failed commands reported."}</span>
+              </div>
+            )}
           </div>
           <div className="patch-panel">
             <p className="section-label">{codeEditRows.length > 0 ? "Applied Edits" : "Risk Queue"}</p>
@@ -2621,7 +4056,100 @@ export default function Home() {
                 <b>{file.label}</b>
               </div>
             ))}
+            {codeActionRows.map((action) => (
+              <div className="risk-row action-row" key={action}>
+                <span>{codeArtifact?.execution?.action_required ? "next" : "ready"}</span>
+                <b>{action}</b>
+              </div>
+            ))}
+            <button className="patch-review-button" type="button" onClick={() => void loadGitDiff(false)}>
+              Review diff
+            </button>
           </div>
+          <section className="diff-review">
+            <div className="feature-heading">
+              <p className="section-label">Side-by-Side Diff</p>
+              <strong>{gitDiffResult?.diff ? `${diffAdded.length} added / ${diffRemoved.length} removed` : "Load repository diff"}</strong>
+            </div>
+            <div className="diff-columns">
+              <pre className="diff-removed">{diffRemoved.join("\n") || "No removed lines."}</pre>
+              <pre className="diff-added">{diffAdded.join("\n") || "No added lines."}</pre>
+            </div>
+          </section>
+          <section className="git-workflow">
+            <div className="feature-heading">
+              <p className="section-label">Git Workflow</p>
+              <strong>Branch, stage, commit, push, rollback</strong>
+            </div>
+            <div className="git-workflow-grid">
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const paths = gitStagePaths.split(",").map((path) => path.trim()).filter(Boolean);
+                  void runGitOperation("stage", { paths }, `Stage ${paths.length} selected path(s)?`);
+                }}
+              >
+                <input
+                  placeholder="Paths to stage, comma separated"
+                  value={gitStagePaths}
+                  onChange={(event) => setGitStagePaths(event.target.value)}
+                />
+                <button type="submit" disabled={!gitStagePaths.trim() || gitOperationBusy}>Stage</button>
+              </form>
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void runGitOperation("branch", { name: gitBranchName.trim() }, `Create and switch to branch "${gitBranchName.trim()}"?`);
+                }}
+              >
+                <input placeholder="New branch name" value={gitBranchName} onChange={(event) => setGitBranchName(event.target.value)} />
+                <button type="submit" disabled={!gitBranchName.trim() || gitOperationBusy}>Create branch</button>
+              </form>
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void runGitOperation("commit", { message: gitCommitMessage.trim() }, "Commit the currently staged files?");
+                }}
+              >
+                <input placeholder="Commit message" value={gitCommitMessage} onChange={(event) => setGitCommitMessage(event.target.value)} />
+                <button type="submit" disabled={!gitCommitMessage.trim() || gitOperationBusy}>Commit</button>
+              </form>
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void runGitOperation("push", { branch: gitPushBranch.trim(), remote: "origin" }, `Push "${gitPushBranch.trim()}" to origin?`);
+                }}
+              >
+                <input placeholder="Branch to push" value={gitPushBranch} onChange={(event) => setGitPushBranch(event.target.value)} />
+                <button type="submit" disabled={!gitPushBranch.trim() || gitOperationBusy}>Push</button>
+              </form>
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void runGitOperation("rollback", { commit: gitRollbackCommit.trim() }, `Create a revert commit for ${gitRollbackCommit.trim()}?`);
+                }}
+              >
+                <input placeholder="Commit SHA to revert" value={gitRollbackCommit} onChange={(event) => setGitRollbackCommit(event.target.value)} />
+                <button type="submit" disabled={!gitRollbackCommit.trim() || gitOperationBusy}>Rollback</button>
+              </form>
+            </div>
+            <pre>{gitOperationStatus}</pre>
+          </section>
+          <section className="terminal-runner">
+            <p className="section-label">Approved Terminal Runner</p>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void runTerminalCommand();
+              }}
+            >
+              <input value={terminalCommand} onChange={(event) => setTerminalCommand(event.target.value)} />
+              <button type="submit" disabled={!terminalCommand.trim() || terminalBusy}>
+                {terminalBusy ? "Running..." : "Run"}
+              </button>
+            </form>
+            <pre>{terminalOutput || "Command output will appear here."}</pre>
+          </section>
         </div>
       );
     }
@@ -2664,6 +4192,33 @@ export default function Home() {
               <span key={`${item.agent}-${index}`}>{item.agent} / P{item.priority}: {item.objective}</span>
             ))}
           </div>
+          <section className="isolated-swarm-panel">
+            <p className="section-label">Isolated Worker Swarm</p>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void createIsolatedSwarmRun();
+              }}
+            >
+              <input
+                placeholder="Objective for durable multi-worker debate"
+                value={swarmObjective}
+                onChange={(event) => setSwarmObjective(event.target.value)}
+              />
+              <button type="submit" disabled={!swarmObjective.trim() || swarmBusy}>
+                {swarmBusy ? "Queueing..." : "Queue isolated swarm"}
+              </button>
+            </form>
+            <div>
+              {isolatedSwarmRuns.slice(0, 4).map((run) => (
+                <article key={run.id}>
+                  <b>{run.objective}</b>
+                  <span>{run.status} / round {run.round ?? 1} / {Math.round((run.consensus?.confidence ?? 0) * 100)}% consensus</span>
+                  <small>{run.debate_state?.phase ?? run.debate_protocol?.mode ?? "two-round worker debate"} / {(run.debate_protocol?.independent_agents ?? []).length || 3} agents</small>
+                </article>
+              ))}
+            </div>
+          </section>
         </div>
       );
     }
@@ -2699,6 +4254,65 @@ export default function Home() {
       );
     }
 
+    if (activeModule === "loop") {
+      return (
+        <div className="module-special autonomy-console">
+          <section className="autonomy-launcher">
+            <p className="section-label">Durable Autonomy</p>
+            <h4>Queue independent agent work</h4>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void createAutonomousRun();
+              }}
+            >
+              <input
+                placeholder="Objective for a long-running autonomous run"
+                value={autonomyObjective}
+                onChange={(event) => setAutonomyObjective(event.target.value)}
+              />
+              <button type="submit" disabled={!autonomyObjective.trim() || autonomyBusy}>
+                {autonomyBusy ? "Queueing..." : "Queue run"}
+              </button>
+            </form>
+          </section>
+          <section className="autonomy-run-list">
+            {(autonomousRuns.length > 0 ? autonomousRuns : []).map((run) => (
+              <article className={`autonomy-run status-${run.status}`} key={run.id}>
+                <div>
+                  <p className="section-label">{run.plan?.primary_route ?? "routing"} / {run.status}</p>
+                  <h4>{run.objective}</h4>
+                  <span>{run.synthesis?.summary ?? `${run.plan?.tasks?.length ?? 0} routed step(s), ${run.steps?.length ?? 0} complete.`}</span>
+                  <small>
+                    {run.execution_contract?.mode ?? "durable_worker_queue"} / {run.worker_jobs?.length ?? 0} worker job(s) / max {run.execution_contract?.max_rounds ?? 3} round(s)
+                  </small>
+                </div>
+                <div className="autonomy-route-row">
+                  {(run.plan?.tasks ?? []).slice(0, 5).map((task, index) => (
+                    <span key={`${task.route}-${index}`}>{task.agent} / {task.route}</span>
+                  ))}
+                </div>
+                <div className="autonomy-actions">
+                  {["queued", "running"].includes(run.status) && (
+                    <button type="button" onClick={() => void updateAutonomousRun(run.id, "cancel")}>Cancel</button>
+                  )}
+                  {["cancelled", "failed"].includes(run.status) && (
+                    <button type="button" onClick={() => void updateAutonomousRun(run.id, "resume")}>Resume</button>
+                  )}
+                </div>
+              </article>
+            ))}
+            {autonomousRuns.length === 0 && (
+              <article className="autonomy-run">
+                <h4>No autonomous runs yet</h4>
+                <span>Queue an objective to route work through durable worker jobs.</span>
+              </article>
+            )}
+          </section>
+        </div>
+      );
+    }
+
     if (activeModule === "workflow") {
       return (
         <div className="module-special workflow-rail">
@@ -2725,11 +4339,37 @@ export default function Home() {
             </button>
               <span>{sourceStats?.indexed_sources ?? indexedSources.length} indexed • scoped retrieval ready</span>
           </div>
+          <form
+            className="source-url-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void ingestSourceUrl();
+            }}
+          >
+            <select value={sourceUrlType} onChange={(event) => setSourceUrlType(event.target.value as "WEB" | "GITHUB")}>
+              <option value="WEB">Web page</option>
+              <option value="GITHUB">GitHub repository</option>
+            </select>
+            <input
+              value={sourceUrl}
+              placeholder={sourceUrlType === "GITHUB" ? "https://github.com/owner/repository" : "https://example.com/article"}
+              onChange={(event) => setSourceUrl(event.target.value)}
+            />
+            <button type="submit" disabled={!sourceUrl.trim() || sourceUrlBusy}>
+              {sourceUrlBusy ? "Indexing..." : "Index URL"}
+            </button>
+          </form>
           {sources.map((source) => (
             <div className="source-row" key={source.id}>
-              <b>{source.name}</b>
-              <span>{source.type} • {source.size}</span>
-              <em>{source.status}</em>
+              <div>
+                <b>{source.name}</b>
+                <span>{source.type} • {source.size}</span>
+                <em>{source.status}</em>
+              </div>
+              <div className="source-actions">
+                <button type="button" onClick={() => void reindexSource(source)}>Reindex</button>
+                <button type="button" onClick={() => void removeSource(source)}>Remove</button>
+              </div>
             </div>
           ))}
         </div>
@@ -2779,6 +4419,65 @@ export default function Home() {
       </div>
     );
   };
+
+  if (authChecking) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-panel auth-loading" aria-live="polite">
+          <span className="brand-mark">H</span>
+          <p className="eyebrow">HELIOS</p>
+          <h1>Checking session</h1>
+          <span className="auth-status">Connecting to the control plane...</span>
+        </section>
+      </main>
+    );
+  }
+
+  if (authRequired && !authUser) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-panel">
+          <div className="auth-brand">
+            <span className="brand-mark">H</span>
+            <div>
+              <p className="eyebrow">HELIOS</p>
+              <h1>Sign in</h1>
+            </div>
+          </div>
+          <form
+            className="auth-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void login();
+            }}
+          >
+            <label>
+              <span>Username</span>
+              <input
+                autoFocus
+                autoComplete="username"
+                value={loginUsername}
+                onChange={(event) => setLoginUsername(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>Password</span>
+              <input
+                autoComplete="current-password"
+                type="password"
+                value={loginPassword}
+                onChange={(event) => setLoginPassword(event.target.value)}
+              />
+            </label>
+            {loginError && <div className="auth-error" role="alert">{loginError}</div>}
+            <button type="submit" disabled={!loginUsername.trim() || !loginPassword || loginBusy}>
+              {loginBusy ? "Signing in..." : "Sign in"}
+            </button>
+          </form>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main
@@ -2839,6 +4538,16 @@ export default function Home() {
             </div>
           </div>
           <div className="topbar-actions">
+            <button
+              className="account-button"
+              type="button"
+              aria-label={`Account: ${authUser?.username ?? "Local"}`}
+              onClick={openAccount}
+            >
+              <Icon name="user" />
+              <span>{authUser?.username ?? "Local"}</span>
+              <small>{authUser?.role ?? (HELIOS_API_KEY ? "api key" : "local")}</small>
+            </button>
             <span className={`model-pill runtime-${runtimeState}`}>{modelName}</span>
             <button className="icon-button" type="button" aria-label="Open memory" onClick={() => setMemoryOpen(true)}>
               <Icon name="brain" />
@@ -2968,6 +4677,17 @@ export default function Home() {
                       {mode}
                     </button>
                   ))}
+                </div>
+                <div className="conversation-mode-detail">
+                  <b>{activeConversationMode?.label ?? conversationMode}</b>
+                  <span>{activeConversationMode?.description ?? "Conversation behavior adapts to the selected mode."}</span>
+                  <small>
+                    {[
+                      activeConversationMode?.response_length ? `length: ${activeConversationMode.response_length}` : null,
+                      activeConversationMode?.reasoning_depth ? `depth: ${activeConversationMode.reasoning_depth}` : null,
+                      activeConversationMode?.tool_posture ? `tools: ${activeConversationMode.tool_posture}` : null,
+                    ].filter(Boolean).join(" / ")}
+                  </small>
                 </div>
                 {attachments.length > 0 && (
                   <div className="attachment-tray">
@@ -3141,6 +4861,15 @@ export default function Home() {
                 if (event.key === "Enter") void createMission();
               }}
             />
+            <label className="mission-schedule-field">
+              <span className="section-label">Schedule (optional)</span>
+              <input
+                type="datetime-local"
+                value={missionScheduledAt}
+                min={new Date().toISOString().slice(0, 16)}
+                onChange={(event) => setMissionScheduledAt(event.target.value)}
+              />
+            </label>
             <div className="mission-picker-grid">
               <div>
                 <p className="section-label">Workspace</p>
@@ -3184,7 +4913,7 @@ export default function Home() {
               disabled={!missionTitle.trim() || isCreatingMission}
               onClick={() => void createMission()}
             >
-              {isCreatingMission ? "Creating" : "Create Mission"}
+              {isCreatingMission ? "Saving" : missionScheduledAt ? "Schedule Mission" : "Create Mission"}
             </button>
           </section>
         </div>
@@ -3201,26 +4930,41 @@ export default function Home() {
             <span className="drawer-copy">
               Live backend memory and indexed project sources are available to the cognitive engine.
             </span>
+            <div className="memory-controls">
+              <button type="button" onClick={() => void refreshMemoryItems()} disabled={memoryBusy}>Refresh</button>
+              <button type="button" onClick={() => exportJson("helios-memory.json", memoryItems)}>Export JSON</button>
+              <span>{memoryStatus}</span>
+            </div>
+            <div className="memory-list">
+              {memoryItems.length > 0 ? memoryItems.map((item, index) => (
+                <article className="memory-entry" key={`${item.timestamp ?? "memory"}-${index}`}>
+                  <div>
+                    <b>{renderText(item.user, "User")}</b>
+                    <span>{renderText(item.assistant, "Assistant")}</span>
+                  </div>
+                  <small>{renderText(item.timestamp, "Stored memory entry")}</small>
+                  <button type="button" onClick={() => void deleteMemoryItem(index)}>Delete</button>
+                </article>
+              )) : <p className="memory-empty">No memory items are stored yet.</p>}
+            </div>
             <div className="brain-map">
               <div className="brain-core">
                 <b>{projectBrain?.summary?.total_nodes ?? 0}</b>
                 <span>nodes</span>
                 <i>{projectBrain?.summary?.health ?? "loading"}</i>
               </div>
-              <div className="brain-nodes">
-                {(projectBrain?.nodes ?? []).slice(0, 9).map((node) => (
-                  <div className={`brain-node kind-${node.kind ?? "node"}`} key={node.id}>
-                    <b>{node.label}</b>
-                    <span>{node.detail ?? node.kind}</span>
-                  </div>
-                ))}
-              </div>
-              <div className="brain-links">
-                {(projectBrain?.links ?? []).slice(0, 6).map((link, index) => (
-                  <span key={`${link.from}-${link.to}-${index}`}>
-                    {[link.from, "->", link.to, "/", link.label].filter(Boolean).join(" ")}
-                  </span>
-                ))}
+              <div className="deep-brain-graph">
+                <GraphMap
+                  nodes={projectBrain?.nodes ?? []}
+                  links={projectBrain?.links ?? []}
+                  selectedId={selectedBrainNode?.id}
+                  onSelect={setSelectedBrainNode}
+                  label="Interactive Project Brain knowledge graph"
+                />
+                <div className="graph-selection">
+                  <b>{selectedBrainNode?.label ?? "Select a Project Brain node"}</b>
+                  <span>{selectedBrainNode?.detail ?? selectedBrainNode?.kind ?? "Inspect memory, sources, missions, semantic records, and executions."}</span>
+                </div>
               </div>
             </div>
             {liveMemoryScopes.map((scope) => (
@@ -3242,9 +4986,27 @@ export default function Home() {
             <p className="eyebrow">Execution Log</p>
             <h3>{runLedger.length} captured events</h3>
             <span className="drawer-copy">Inspect tool calls, attempts, failures, inputs, and outputs from the live execution ledger.</span>
+            <div className="execution-controls">
+              <input
+                placeholder="Filter events"
+                value={executionSearch}
+                onChange={(event) => setExecutionSearch(event.target.value)}
+              />
+              <select value={executionStatusFilter} onChange={(event) => setExecutionStatusFilter(event.target.value)}>
+                <option value="all">All statuses</option>
+                <option value="success">Success</option>
+                <option value="failed">Failed</option>
+                <option value="blocked">Blocked</option>
+                <option value="running">Running</option>
+              </select>
+              <button type="button" onClick={() => exportJson("helios-execution-log.json", filteredExecutionEvents)}>Export</button>
+              <button type="button" onClick={() => void refreshExecutionEvents()}>Refresh</button>
+              <button type="button" disabled={!selectedExecution?.tool} onClick={() => void retrySelectedExecution()}>Retry tool</button>
+              <button type="button" onClick={() => setRunLedger([])}>Clear view</button>
+            </div>
             <div className="execution-drawer-grid">
               <div className="execution-event-list">
-                {runLedger.map((event) => (
+                {filteredExecutionEvents.map((event) => (
                   <button
                     className={`${selectedExecution?.id === event.id ? "active" : ""} ${event.status ?? "unknown"}`}
                     key={event.id}
@@ -3304,6 +5066,89 @@ export default function Home() {
                 <b>{item.label}</b>
               </div>
             ))}
+            <button
+              className="mission-create-button"
+              type="button"
+              disabled={Boolean(authUser && authUser.role !== "admin")}
+              onClick={() => void deployProject()}
+            >
+              Deploy HELIOS
+            </button>
+          </div>
+        </div>
+      )}
+
+      {accountOpen && (
+        <div className="memory-drawer" role="dialog" aria-modal="true">
+          <div className="drawer-panel account-drawer">
+            <button className="drawer-close" type="button" aria-label="Close account" onClick={() => setAccountOpen(false)}>
+              <Icon name="close" />
+            </button>
+            <p className="eyebrow">Account</p>
+            <h3>{authUser?.username ?? "Local access"}</h3>
+            <span className="drawer-copy">
+              {authUser ? `${authUser.role} permissions are active for this session.` : "Authentication is managed by local API key or open development mode."}
+            </span>
+            <div className="account-profile">
+              <Icon name="user" />
+              <div>
+                <b>{authUser?.username ?? "Local operator"}</b>
+                <span>{authUser?.role ?? (HELIOS_API_KEY ? "API key access" : "Development access")}</span>
+              </div>
+              <i>{authUser?.active === false ? "disabled" : "active"}</i>
+            </div>
+
+            {authUser?.role === "admin" && (
+              <section className="user-admin">
+                <p className="section-label">User Management</p>
+                <form
+                  className="user-admin-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void addManagedUser();
+                  }}
+                >
+                  <input
+                    placeholder="Username"
+                    autoComplete="off"
+                    value={newUsername}
+                    onChange={(event) => setNewUsername(event.target.value)}
+                  />
+                  <input
+                    placeholder="Temporary password"
+                    autoComplete="new-password"
+                    type="password"
+                    value={newPassword}
+                    onChange={(event) => setNewPassword(event.target.value)}
+                  />
+                  <select value={newRole} onChange={(event) => setNewRole(event.target.value)}>
+                    <option value="viewer">Viewer</option>
+                    <option value="operator">Operator</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                  <button type="submit" disabled={!newUsername.trim() || !newPassword}>Create user</button>
+                </form>
+                {userAdminStatus && <span className="user-admin-status">{userAdminStatus}</span>}
+                <div className="user-list">
+                  {managedUsers.map((user) => (
+                    <div className="user-row" key={user.id ?? user.username}>
+                      <div>
+                        <b>{user.username}</b>
+                        <span>{user.role}</span>
+                      </div>
+                      <i>{user.active === false ? "disabled" : "active"}</i>
+                    </div>
+                  ))}
+                  {managedUsers.length === 0 && <span className="user-admin-status">No users loaded yet.</span>}
+                </div>
+              </section>
+            )}
+
+            {authUser && (
+              <button className="logout-button" type="button" onClick={logout}>
+                Sign out
+              </button>
+            )}
           </div>
         </div>
       )}

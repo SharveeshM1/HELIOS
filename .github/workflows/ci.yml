@@ -47,16 +47,7 @@ jobs:
       - run: pip install -r backend/requirements.txt
       - run: npm ci
         working-directory: frontend
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps chromium webkit
         working-directory: frontend
-      - run: python -m uvicorn backend.server:app --app-dir backend --host 127.0.0.1 --port 8000 &
-      - run: npm run dev -- --hostname 127.0.0.1 &
-        working-directory: frontend
-      - run: |
-          for attempt in {1..30}; do
-            curl -fsS http://127.0.0.1:8000/health && curl -fsS http://127.0.0.1:3000 && exit 0
-            sleep 2
-          done
-          exit 1
       - run: npm run test:e2e
         working-directory: frontend

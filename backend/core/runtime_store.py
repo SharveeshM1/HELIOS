@@ -150,8 +150,261 @@ def _connect():
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS approval_requests (
+            id TEXT PRIMARY KEY,
+            action TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            module TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL,
+            approved_by TEXT,
+            updated_at REAL NOT NULL,
+            created_at REAL NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scheduled_missions (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            module TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            scheduled_at REAL NOT NULL,
+            recurrence_minutes INTEGER,
+            status TEXT NOT NULL,
+            updated_at REAL NOT NULL,
+            created_at REAL NOT NULL
+        )
+        """
+    )
 
     return connection
+
+
+def create_approval_request(
+    action: str,
+    payload: dict,
+    actor: str,
+    module: str,
+    reason: str
+) -> dict:
+    approval_id = str(uuid.uuid4())
+    now = time.time()
+    with store_lock:
+        with _connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO approval_requests (
+                    id, action, payload, actor, module, reason,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (
+                    approval_id,
+                    action,
+                    json.dumps(payload, ensure_ascii=False),
+                    actor,
+                    module,
+                    reason,
+                    now,
+                    now
+                )
+            )
+    return {
+        "id": approval_id,
+        "action": action,
+        "tool": action,
+        "payload": payload,
+        "actor": actor,
+        "module": module,
+        "reason": reason,
+        "status": "pending",
+        "created_at": now,
+        "updated_at": now
+    }
+
+
+def update_approval_request(
+    approval_id: str,
+    status: str,
+    approved_by: str | None = None
+) -> dict:
+    now = time.time()
+    with store_lock:
+        with _connect() as connection:
+            connection.execute(
+                """
+                UPDATE approval_requests
+                SET status = ?, approved_by = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, approved_by, now, approval_id)
+            )
+
+    with store_lock:
+        with _connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, action, payload, actor, module, reason, status,
+                       approved_by, created_at, updated_at
+                FROM approval_requests WHERE id = ?
+                """,
+                (approval_id,)
+            ).fetchone()
+
+    if not row:
+        raise ValueError(f"Approval request {approval_id} not found.")
+
+    keys = (
+        "id", "action", "payload", "actor", "module", "reason", "status",
+        "approved_by", "created_at", "updated_at"
+    )
+    res = dict(zip(keys, row))
+    res["payload"] = json.loads(res["payload"])
+    res["tool"] = res["action"]
+    return res
+
+
+def list_approval_requests(status: str | None = None) -> list[dict]:
+    query = """
+        SELECT id, action, payload, actor, module, reason, status,
+               approved_by, created_at, updated_at
+        FROM approval_requests
+    """
+    params = []
+    if status:
+        query += " WHERE status = ?"
+        params.append(status)
+    query += " ORDER BY created_at DESC"
+
+    with store_lock:
+        with _connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+
+    keys = (
+        "id", "action", "payload", "actor", "module", "reason", "status",
+        "approved_by", "created_at", "updated_at"
+    )
+    results = []
+    for row in rows:
+        res = dict(zip(keys, row))
+        res["payload"] = json.loads(res["payload"])
+        res["tool"] = res["action"]
+        results.append(res)
+    return results
+
+
+def get_approval_request(approval_id: str) -> dict | None:
+    with store_lock:
+        with _connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, action, payload, actor, module, reason, status,
+                       approved_by, created_at, updated_at
+                FROM approval_requests WHERE id = ?
+                """,
+                (approval_id,)
+            ).fetchone()
+
+    if not row:
+        return None
+
+    keys = (
+        "id", "action", "payload", "actor", "module", "reason", "status",
+        "approved_by", "created_at", "updated_at"
+    )
+    res = dict(zip(keys, row))
+    res["payload"] = json.loads(res["payload"])
+    res["tool"] = res["action"]
+    return res
+
+
+def schedule_mission(
+    title: str,
+    agent: str,
+    module: str,
+    scheduled_at: float,
+    detail: str = "",
+    recurrence_minutes: int | None = None
+) -> dict:
+    mission_id = str(uuid.uuid4())
+    now = time.time()
+    with store_lock:
+        with _connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO scheduled_missions (
+                    id, title, agent, module, detail, scheduled_at,
+                    recurrence_minutes, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
+                """,
+                (
+                    mission_id, title, agent, module, detail, scheduled_at,
+                    recurrence_minutes, now, now
+                )
+            )
+    return {
+        "id": mission_id,
+        "title": title,
+        "agent": agent,
+        "module": module,
+        "detail": detail,
+        "scheduled_at": scheduled_at,
+        "recurrence_minutes": recurrence_minutes,
+        "status": "scheduled"
+    }
+
+
+def claim_due_scheduled_missions(now: float | None = None) -> list[dict]:
+    now = now or time.time()
+    with store_lock:
+        with _connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT id, title, agent, module, detail, scheduled_at,
+                       recurrence_minutes, status
+                FROM scheduled_missions
+                WHERE status = 'scheduled' AND scheduled_at <= ?
+                """,
+                (now,)
+            ).fetchall()
+
+            if not rows:
+                return []
+
+            mission_ids = [row[0] for row in rows]
+            placeholders = ",".join("?" for _ in mission_ids)
+            connection.execute(
+                f"UPDATE scheduled_missions SET status = 'executing', updated_at = ? WHERE id IN ({placeholders})",
+                (now, *mission_ids)
+            )
+
+    keys = (
+        "id", "title", "agent", "module", "detail", "scheduled_at",
+        "recurrence_minutes", "status"
+    )
+    results = []
+    for row in rows:
+        res = dict(zip(keys, row))
+        res["status"] = "executing"
+        results.append(res)
+    return results
+
+
+def update_scheduled_mission_status(mission_id: str, status: str) -> None:
+    now = time.time()
+    with store_lock:
+        with _connect() as connection:
+            connection.execute(
+                "UPDATE scheduled_missions SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now, mission_id)
+            )
 
 
 def load_document(

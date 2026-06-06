@@ -150,6 +150,16 @@ def create_user(
     username = str(
         username
     ).strip()
+    if not username:
+        raise ValueError(
+            "Username is required."
+        )
+    if len(
+        password
+    ) < 8:
+        raise ValueError(
+            "Password must be at least 8 characters."
+        )
     role = role if role in ROLE_PERMISSIONS else "viewer"
     users = load_users()
 

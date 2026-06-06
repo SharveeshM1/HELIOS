@@ -54,6 +54,8 @@ RETURN CODE:
     assert result["edits"][0]["path"] == "backend/generated_agent_note.txt"
     assert result["verification"][0]["status"] == "passed"
     assert result["commit_ready"] is True
+    assert result["action_required"] is False
+    assert result["verification_health"]["passed"] == 1
     assert calls[0]["agent"] == "code"
     assert calls[0]["tool"] == "create_file"
 
@@ -83,6 +85,8 @@ def test_code_workflow_blocks_paths_outside_project(
 
     assert result["blockers"]
     assert result["edits"] == []
+    assert result["action_required"] is True
+    assert result["next_actions"]
     assert calls
     assert calls[0][1] == "run_command"
 

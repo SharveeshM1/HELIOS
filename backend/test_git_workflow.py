@@ -89,3 +89,132 @@ def test_git_commit_runs_when_confirmed(
         "-m",
         "Test commit"
     ] in calls
+
+
+def test_git_diff_returns_patch_text(
+    monkeypatch
+):
+    monkeypatch.setattr(
+        git_workflow,
+        "_run_git",
+        lambda args: SimpleNamespace(
+            stdout="-old\n+new\n",
+            stderr="",
+            returncode=0
+        )
+    )
+
+    result = git_workflow.git_diff(
+        staged=True,
+        path="backend/main.py"
+    )
+
+    assert result["status"] == "success"
+    assert "+new" in result["diff"]
+
+
+def test_git_stage_runs_only_after_confirmation(
+    monkeypatch
+):
+    calls = []
+
+    def fake_git(
+        args
+    ):
+        calls.append(
+            args
+        )
+        return SimpleNamespace(
+            stdout="",
+            stderr="",
+            returncode=0
+        )
+
+    monkeypatch.setattr(
+        git_workflow,
+        "_run_git",
+        fake_git
+    )
+
+    preview = git_workflow.stage_files(
+        [
+            "backend/main.py"
+        ],
+        confirm=False
+    )
+    confirmed = git_workflow.stage_files(
+        [
+            "backend/main.py"
+        ],
+        confirm=True
+    )
+
+    assert preview["status"] == "preview"
+    assert confirmed["status"] == "success"
+    assert [
+        "add",
+        "--",
+        "backend/main.py"
+    ] in calls
+
+
+def test_git_branch_push_and_rollback_are_validated(
+    monkeypatch
+):
+    calls = []
+
+    def fake_git(
+        args
+    ):
+        calls.append(
+            args
+        )
+        return SimpleNamespace(
+            stdout="",
+            stderr="",
+            returncode=0
+        )
+
+    monkeypatch.setattr(
+        git_workflow,
+        "_run_git",
+        fake_git
+    )
+
+    assert git_workflow.create_branch(
+        "../bad",
+        confirm=True
+    )["status"] == "blocked"
+    assert git_workflow.rollback_commit(
+        "not-a-sha",
+        confirm=True
+    )["status"] == "blocked"
+    assert git_workflow.create_branch(
+        "feature/phase-one",
+        confirm=True
+    )["status"] == "success"
+    assert git_workflow.push_branch(
+        "feature/phase-one",
+        confirm=True
+    )["status"] == "success"
+    assert git_workflow.rollback_commit(
+        "abc1234",
+        confirm=True
+    )["status"] == "success"
+
+    assert [
+        "switch",
+        "-c",
+        "feature/phase-one"
+    ] in calls
+    assert [
+        "push",
+        "-u",
+        "origin",
+        "feature/phase-one"
+    ] in calls
+    assert [
+        "revert",
+        "--no-edit",
+        "abc1234"
+    ] in calls

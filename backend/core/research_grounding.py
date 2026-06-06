@@ -2,6 +2,30 @@ import re
 from typing import Dict
 from typing import List
 
+STOP_TERMS = {
+    "about",
+    "also",
+    "and",
+    "are",
+    "can",
+    "does",
+    "for",
+    "from",
+    "has",
+    "have",
+    "how",
+    "into",
+    "its",
+    "the",
+    "this",
+    "what",
+    "when",
+    "where",
+    "which",
+    "why",
+    "with"
+}
+
 
 def extract_terms(
     text: str
@@ -15,6 +39,7 @@ def extract_terms(
                     text
                 ).lower()
             )
+            if term not in STOP_TERMS
         }
     )
 
@@ -138,6 +163,24 @@ def research_coverage(
         }
     )
 
+    coverage_ratio = (
+        round(
+            len(
+                matched_terms
+            )
+            / len(
+                query_terms
+            ),
+            2
+        )
+        if query_terms
+        else 1
+    )
+    grounded = bool(
+        citations
+    )
+    enforced = grounded and coverage_ratio >= 0.5
+
     return {
         "query_terms": query_terms,
         "matched_terms": matched_terms,
@@ -146,12 +189,14 @@ def research_coverage(
             for term in query_terms
             if term not in matched_terms
         ],
+        "coverage_ratio": coverage_ratio,
         "citation_count": len(
             citations
         ),
-        "grounded": bool(
-            citations
-        ),
+        "grounded": grounded,
+        "enforced": enforced,
+        "answer_policy": "cite_or_refuse",
+        "minimum_coverage_ratio": 0.5,
         **source_stats
     }
 
@@ -166,6 +211,21 @@ def cited_summary(
         return (
             "No indexed evidence matched this research request. "
             "HELIOS should not make source-backed claims until sources are added or the query is broadened."
+        )
+
+    if not coverage.get(
+        "enforced",
+        False
+    ):
+        missing = coverage.get(
+            "unmatched_terms",
+            []
+        )
+        return (
+            "Indexed evidence was found, but coverage is too thin for a fully source-grounded answer. "
+            f"Matched terms: {', '.join(coverage.get('matched_terms', [])[:8]) or 'none'}. "
+            f"Unsupported terms: {', '.join(missing[:8]) or 'none'}. "
+            "Add stronger sources or broaden the query before treating this as answered."
         )
 
     claim_lines = [
@@ -270,6 +330,14 @@ def build_grounded_research_artifact(
         "citations": citations,
         "claims": claims,
         "coverage": coverage,
+        "enforcement": {
+            "policy": coverage["answer_policy"],
+            "grounded": coverage["grounded"],
+            "enforced": coverage["enforced"],
+            "coverage_ratio": coverage["coverage_ratio"],
+            "minimum_coverage_ratio": coverage["minimum_coverage_ratio"],
+            "unsupported_terms": coverage["unmatched_terms"]
+        },
         "grounded_answer": cited_summary(
             title,
             citations,

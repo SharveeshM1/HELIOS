@@ -175,9 +175,24 @@ def record_execution_event(
     duration_ms=None,
     attempt=1,
     parent_id=None,
+    trace_id=None,
     metadata=None
 ):
     memory = load_execution_memory()
+    safe_metadata = make_json_safe(
+        metadata
+        or {}
+    )
+    safe_trace_id = trace_id or (
+        safe_metadata.get(
+            "trace_id"
+        )
+        if isinstance(
+            safe_metadata,
+            dict
+        )
+        else None
+    )
 
     event = {
         "id": str(
@@ -209,10 +224,8 @@ def record_execution_event(
         "duration_ms": duration_ms,
         "attempt": attempt,
         "parent_id": parent_id,
-        "metadata": make_json_safe(
-            metadata
-            or {}
-        )
+        "trace_id": safe_trace_id,
+        "metadata": safe_metadata
     }
 
     memory.append(

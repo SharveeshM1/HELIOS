@@ -225,6 +225,137 @@ def _summarize_command_result(
     }
 
 
+def _latest_verification(
+    verification: List[Dict]
+) -> Dict:
+    latest = {}
+
+    for check in verification:
+        latest[
+            check.get(
+                "command",
+                check.get(
+                    "label",
+                    "unknown"
+                )
+            )
+        ] = check
+
+    return latest
+
+
+def _verification_summary(
+    verification: List[Dict]
+) -> Dict:
+    latest = _latest_verification(
+        verification
+    )
+    failed = [
+        check
+        for check in latest.values()
+        if check.get(
+            "status"
+        )
+        == "failed"
+    ]
+    passed = [
+        check
+        for check in latest.values()
+        if check.get(
+            "status"
+        )
+        == "passed"
+    ]
+    unknown = [
+        check
+        for check in latest.values()
+        if check.get(
+            "status"
+        )
+        == "unknown"
+    ]
+
+    return {
+        "total": len(
+            latest
+        ),
+        "passed": len(
+            passed
+        ),
+        "failed": len(
+            failed
+        ),
+        "unknown": len(
+            unknown
+        ),
+        "failed_commands": [
+            check.get(
+                "command",
+                check.get(
+                    "label",
+                    "unknown"
+                )
+            )
+            for check in failed
+        ]
+    }
+
+
+def _repair_next_actions(
+    *,
+    edits: List[Dict],
+    verification: List[Dict],
+    blockers: List[str],
+    commit_ready: bool,
+    target_files: List[str]
+) -> List[str]:
+    if commit_ready:
+        return [
+            "Review the patch.",
+            "Stage the edited files.",
+            "Commit after human approval."
+        ]
+
+    actions = []
+
+    if blockers:
+        actions.append(
+            "Resolve safety blockers before applying more edits."
+        )
+
+    failed_commands = _verification_summary(
+        verification
+    ).get(
+        "failed_commands",
+        []
+    )
+
+    if failed_commands:
+        actions.append(
+            "Inspect failed verification commands: "
+            + ", ".join(
+                failed_commands[:3]
+            )
+            + "."
+        )
+
+    if not edits and not target_files:
+        actions.append(
+            "Provide a concrete target file or a precise edit request."
+        )
+    elif not edits:
+        actions.append(
+            "No edit was applied; rerun with explicit structured edits or a clearer objective."
+        )
+
+    if not actions:
+        actions.append(
+            "Review verification output before continuing."
+        )
+
+    return actions
+
+
 def run_code_execution_workflow(
     objective: str,
     target_files: List[str] | None = None,
@@ -362,14 +493,9 @@ def run_code_execution_workflow(
                     }
                 )
 
-    latest_checks = {}
-
-    for check in verification:
-        latest_checks[
-            check.get(
-                "command"
-            )
-        ] = check
+    latest_checks = _latest_verification(
+        verification
+    )
 
     commit_ready = bool(
         edits
@@ -383,15 +509,27 @@ def run_code_execution_workflow(
         }
         for check in latest_checks.values()
     ) and not blockers
+    verification_health = _verification_summary(
+        verification
+    )
 
     return {
         "mode": "bounded_code_execution",
         "target_files": target_files,
         "edits": edits,
         "verification": verification,
+        "verification_health": verification_health,
         "verification_attempts": max_attempts,
         "blockers": blockers,
         "commit_ready": commit_ready,
+        "action_required": not commit_ready,
+        "next_actions": _repair_next_actions(
+            edits=edits,
+            verification=verification,
+            blockers=blockers,
+            commit_ready=commit_ready,
+            target_files=target_files
+        ),
         "summary": (
             "Applied requested edit and captured verification."
             if edits
@@ -559,27 +697,36 @@ def run_structured_code_repair(
             if summary["status"] != "failed":
                 break
 
-    latest = {
-        item["command"]: item
-        for item in verification
-    }
+    latest = _latest_verification(
+        verification
+    )
+    commit_ready = bool(
+        applied
+    ) and not blockers and all(
+        item.get(
+            "status"
+        )
+        == "passed"
+        for item in latest.values()
+    )
     return {
         "mode": "structured_code_repair",
         "objective": objective,
         "target_files": target_files,
         "edits": applied,
         "verification": verification,
+        "verification_health": _verification_summary(
+            verification
+        ),
         "blockers": blockers,
-        "commit_ready": bool(
-            applied
-        )
-        and not blockers
-        and all(
-            item.get(
-                "status"
-            )
-            == "passed"
-            for item in latest.values()
+        "commit_ready": commit_ready,
+        "action_required": not commit_ready,
+        "next_actions": _repair_next_actions(
+            edits=applied,
+            verification=verification,
+            blockers=blockers,
+            commit_ready=commit_ready,
+            target_files=target_files
         )
     }
 
@@ -641,7 +788,12 @@ def run_general_code_repair(
             "blockers": [
                 "At least one safe project target file is required."
             ],
-            "attempts": []
+            "attempts": [],
+            "commit_ready": False,
+            "action_required": True,
+            "next_actions": [
+                "Select at least one safe project file before running automatic repair."
+            ]
         }
 
     file_context = {}
@@ -719,7 +871,24 @@ Previous verification failures:
                     "status": "completed",
                     "attempts": attempts,
                     "commit_ready": True,
-                    "target_files": safe_files
+                    "target_files": safe_files,
+                    "action_required": False,
+                    "next_actions": _repair_next_actions(
+                        edits=repair.get(
+                            "edits",
+                            []
+                        ),
+                        verification=repair.get(
+                            "verification",
+                            []
+                        ),
+                        blockers=repair.get(
+                            "blockers",
+                            []
+                        ),
+                        commit_ready=True,
+                        target_files=safe_files
+                    )
                 }
             failure_context = "\n".join(
                 str(
@@ -759,5 +928,10 @@ Previous verification failures:
         "status": "failed",
         "attempts": attempts,
         "commit_ready": False,
-        "target_files": safe_files
+        "target_files": safe_files,
+        "action_required": True,
+        "next_actions": [
+            "Review the final repair attempt and failed verification output.",
+            "Provide a narrower objective or explicit structured edit if automatic repair cannot converge."
+        ]
     }

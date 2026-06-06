@@ -43,3 +43,21 @@ def test_task_planner_preserves_legacy_list_shape():
     )
     assert plan[0]["agent"] == "code"
     assert "confidence" in plan[0]
+
+
+def test_intent_router_supports_planning_knowledge_and_swarm_routes():
+    plan = route_objective(
+        "Plan a project brain memory workflow and run a multi agent debate"
+    )
+    routes = {
+        task["route"]
+        for task in plan["tasks"]
+    }
+
+    assert {
+        "planning",
+        "knowledge",
+        "swarm"
+    }.issubset(
+        routes
+    )

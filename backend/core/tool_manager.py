@@ -1,5 +1,7 @@
-from tools import TOOL_REGISTRY
 import time
+import uuid
+
+from tools import TOOL_REGISTRY
 
 from memory.execution_memory import (
     record_execution_event
@@ -48,6 +50,20 @@ def execute_tool(
     **kwargs
 
 ):
+    safe_metadata = {
+        **(
+            metadata
+            or {}
+        )
+    }
+    trace_id = safe_metadata.get(
+        "trace_id"
+    ) or str(
+        uuid.uuid4()
+    )
+    safe_metadata[
+        "trace_id"
+    ] = trace_id
 
     if tool_name not in TOOL_REGISTRY:
         record_execution_event(
@@ -61,7 +77,8 @@ def execute_tool(
                 "args": args,
                 "kwargs": kwargs
             },
-            metadata=metadata
+            trace_id=trace_id,
+            metadata=safe_metadata
         )
 
         raise Exception(
@@ -98,7 +115,8 @@ def execute_tool(
                 "kwargs": kwargs
             },
             attempt=attempt,
-            metadata=metadata
+            trace_id=trace_id,
+            metadata=safe_metadata
         )
 
         started_at = time.perf_counter()
@@ -136,7 +154,8 @@ def execute_tool(
                 parent_id=parent_event.get(
                     "id"
                 ),
-                metadata=metadata
+                trace_id=trace_id,
+                metadata=safe_metadata
             )
 
             return result
@@ -167,7 +186,8 @@ def execute_tool(
                 parent_id=parent_event.get(
                     "id"
                 ),
-                metadata=metadata
+                trace_id=trace_id,
+                metadata=safe_metadata
             )
 
             if attempt == max_attempts:

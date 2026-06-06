@@ -13,3 +13,9 @@ pyttsx3
 streamlit-mic-recorder
 pytest
 psycopg[binary]
+chromadb
+sentence-transformers
+pypdf
+python-docx
+beautifulsoup4
+requests

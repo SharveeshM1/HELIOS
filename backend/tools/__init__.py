@@ -12,6 +12,10 @@ from tools.python_tool import (
     execute_python
 )
 
+from tools.deploy_tool import (
+    deploy_project
+)
+
 # =========================================
 # TOOL REGISTRY
 # =========================================
@@ -31,5 +35,8 @@ TOOL_REGISTRY = {
     read_file,
 
     "execute_python":
-    execute_python
+    execute_python,
+
+    "deploy_project":
+    deploy_project
 }

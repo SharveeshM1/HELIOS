@@ -4,6 +4,8 @@ import time
 import uuid
 import asyncio
 
+from contextlib import asynccontextmanager
+
 from fastapi import (
     BackgroundTasks,
     FastAPI,
@@ -44,12 +46,18 @@ except Exception:
 from core.cognitive_engine import (
     CognitiveEngine
 )
+from core import memory as chat_memory
+from core.logging_config import (
+    configure_logging
+)
 from core.code_workflow import (
     run_general_code_repair,
     run_structured_code_repair
 )
 from core.source_library import (
+    delete_source,
     load_sources,
+    reindex_source,
     search_sources,
     source_stats,
     upsert_source
@@ -65,7 +73,17 @@ from core.observability import (
 )
 from core.git_workflow import (
     commit_staged_changes,
-    git_status
+    create_branch,
+    git_diff,
+    git_status,
+    push_branch,
+    rollback_commit,
+    stage_files
+)
+from core.audit_log import (
+    load_audit_events,
+    record_audit_event,
+    verify_audit_chain
 )
 from core.autonomous_runs import (
     cancel_run,
@@ -76,6 +94,12 @@ from core.autonomous_runs import (
     queue_run,
     reconcile_run,
     resume_run
+)
+from core.swarm_runs import (
+    create_swarm_run,
+    get_swarm_run,
+    load_swarm_runs,
+    reconcile_swarm_run
 )
 from core.auth import (
     authenticate_user,
@@ -89,18 +113,35 @@ from core.auth import (
 from core.runtime_config import (
     ALLOWED_MODULES,
     API_KEY,
+    API_KEY_ROLE,
     APP_VERSION,
+    AUTH_COOKIE_SECURE,
     AUTH_SECRET,
     ENVIRONMENT,
     MAX_ATTACHMENT_CHARS,
     MAX_CHAT_MESSAGE_CHARS,
+    MEMORY_DIR,
     RATE_LIMIT_PER_MINUTE,
-    STORAGE_BACKEND
+    STORAGE_BACKEND,
+    TOKEN_TTL_MINUTES
 )
 from core.runtime_store import (
     allow_rate_limited_request,
+    create_approval_request,
+    get_approval_request,
     list_jobs,
+    list_approval_requests,
     storage_status
+)
+from core.runtime_store import (
+    update_approval_request
+)
+from core.plugin_loader import (
+    list_plugin_catalog,
+    load_plugins,
+    plugin_directory,
+    save_plugin_code,
+    uninstall_plugin
 )
 from core.shared_bus import (
     shared_bus
@@ -112,7 +153,8 @@ from core.mission_ledger import (
     latest_missions,
     load_mission_events,
     mission_stats,
-    record_mission_event
+    record_mission_event,
+    recover_mission
 )
 from core.mission_workflows import (
     run_mission_workflow
@@ -124,6 +166,11 @@ from core.tool_manager import (
     execute_tool,
     list_tools
 )
+from core.voice_transcripts import (
+    load_voice_transcripts,
+    save_voice_turn
+)
+from memory.vector_memory import vector_status
 from memory import execution_memory
 
 # =========================================
@@ -143,9 +190,7 @@ load_dotenv(
 # LOGGER
 # =========================================
 
-logging.basicConfig(
-    level=logging.INFO
-)
+configure_logging()
 
 logger = logging.getLogger(
     "helios-backend"
@@ -163,13 +208,24 @@ PUBLIC_PATHS = {
 }
 
 PERMISSION_PREFIXES = {
-    "/git/commit": "commit",
+    "/git": "commit",
     "/tools/execute": "execute",
     "/code/repair": "write",
     "/autonomy/runs": "execute",
+    "/swarm/runs": "execute",
     "/missions": "execute",
     "/sources": "write",
-    "/auth/users": "admin"
+    "/auth/users": "admin",
+    "/audit": "admin",
+    "/approvals": "admin",
+    "/plugins": "admin"
+}
+
+APPROVAL_REQUIRED_TOOLS = {
+    "append_file",
+    "create_file",
+    "deploy_project",
+    "execute_python"
 }
 
 
@@ -254,16 +310,129 @@ CONVERSATION_MODES = {
     "execute": "Prioritize actionable steps, tools, verification, and concrete outcomes."
 }
 
+CONVERSATION_MODE_CONFIG = {
+    "balanced": {
+        "label": "Balanced",
+        "description": "Useful depth without slowing down routine work.",
+        "response_length": "medium",
+        "reasoning_depth": "adaptive",
+        "tool_posture": "when useful"
+    },
+    "concise": {
+        "label": "Concise",
+        "description": "Small, direct answers for quick decisions.",
+        "response_length": "short",
+        "reasoning_depth": "light",
+        "tool_posture": "only when needed"
+    },
+    "deep": {
+        "label": "Deep Analysis",
+        "description": "Tradeoffs, risks, evidence, and implementation detail.",
+        "response_length": "long",
+        "reasoning_depth": "high",
+        "tool_posture": "evidence seeking"
+    },
+    "execute": {
+        "label": "Execution",
+        "description": "Action-oriented responses with verification and concrete outcomes.",
+        "response_length": "task dependent",
+        "reasoning_depth": "operational",
+        "tool_posture": "proactive"
+    }
+}
+
+# =========================================
+# LOAD PLUGINS
+# =========================================
+
+load_plugins()
+
+from core.mission_scheduler import (
+    start_mission_scheduler
+)
+
 # =========================================
 # FASTAPI APP
 # =========================================
+
+
+@asynccontextmanager
+async def lifespan(
+    application: FastAPI
+):
+    del application
+    scheduler_task = asyncio.create_task(
+        start_mission_scheduler()
+    )
+    try:
+        yield
+    finally:
+        scheduler_task.cancel()
+        try:
+            await scheduler_task
+        except asyncio.CancelledError:
+            pass
+
 
 app = FastAPI(
 
     title="HELIOS Backend",
 
-    version="2.0.0"
+    version="2.0.0",
+
+    lifespan=lifespan
 )
+
+class ScheduledMissionRequest(BaseModel):
+    title: str = Field(
+        min_length=1,
+        max_length=180
+    )
+    agent: str = Field(
+        default="Orion",
+        min_length=1,
+        max_length=80
+    )
+    module: str = Field(
+        default="planning",
+        min_length=1,
+        max_length=80
+    )
+    scheduled_at: float = Field(
+        gt=0
+    )
+    detail: str = Field(
+        default="",
+        max_length=360
+    )
+
+@app.post("/missions/schedule")
+async def schedule_mission_endpoint(request: ScheduledMissionRequest):
+    from core.runtime_store import schedule_mission
+    module = request.module.strip().lower()
+    if module not in ALLOWED_MODULES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported HELIOS module: {module}"
+        )
+    mission = await run_in_threadpool(
+        schedule_mission,
+        request.title.strip(),
+        request.agent.strip(),
+        module,
+        request.scheduled_at,
+        request.detail
+    )
+    return {"mission": mission}
+
+@app.get("/missions/scheduled")
+async def list_scheduled_missions_endpoint(status: str = "pending"):
+    from core.runtime_store import list_scheduled_missions
+    missions = await run_in_threadpool(
+        list_scheduled_missions,
+        status
+    )
+    return {"missions": missions}
 
 # =========================================
 # CORS
@@ -300,6 +469,7 @@ class ChatRequest(BaseModel):
     attachments: list[dict] = Field(
         default_factory=list
     )
+    require_grounding: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -314,6 +484,9 @@ class ChatResponse(BaseModel):
         default_factory=list
     )
     grounded: bool = False
+    enforcement: dict = Field(
+        default_factory=dict
+    )
 
 
 class SourceRequest(BaseModel):
@@ -326,7 +499,7 @@ class SourceRequest(BaseModel):
     size: str = "unknown"
     content: str = Field(
         default="",
-        max_length=MAX_ATTACHMENT_CHARS
+        max_length=MAX_ATTACHMENT_CHARS * 512
     )
     scope: str = "project"
 
@@ -335,6 +508,19 @@ class SourceResponse(BaseModel):
 
     source: dict
     stats: dict
+
+
+class AISettingsRequest(BaseModel):
+
+    provider: str = "ollama"
+    model: str = ""
+
+
+class AISettingsResponse(BaseModel):
+
+    provider: str
+    model: str
+    saved: bool
 
 
 class SourceSearchResponse(BaseModel):
@@ -354,6 +540,9 @@ class SourceIntelligenceResponse(BaseModel):
     coverage: dict
     stats: dict
     graph: dict = Field(
+        default_factory=dict
+    )
+    enforcement: dict = Field(
         default_factory=dict
     )
 
@@ -445,6 +634,14 @@ class ToolExecuteRequest(BaseModel):
         ge=0,
         le=2
     )
+    confirm: bool = False
+    approval_id: str | None = None
+
+
+class ApprovalDecisionRequest(BaseModel):
+    status: str = Field(
+        pattern="^(approved|denied)$"
+    )
 
 
 class ToolExecuteResponse(BaseModel):
@@ -455,6 +652,13 @@ class ToolExecuteResponse(BaseModel):
     error: str | None = None
     events: list[dict]
     stats: dict
+    trace_id: str | None = None
+    approval: dict = Field(
+        default_factory=dict
+    )
+    retry_policy: dict = Field(
+        default_factory=dict
+    )
 
 
 class ExecutionEventsResponse(BaseModel):
@@ -476,6 +680,12 @@ class ObservabilityResponse(BaseModel):
     stats: dict
     window: dict
     rates: dict
+    latency_percentiles: dict = Field(
+        default_factory=dict
+    )
+    traces: list[dict] = Field(
+        default_factory=list
+    )
     tool_counts: dict
     status_counts: dict
     slow_tools: list[dict]
@@ -503,6 +713,46 @@ class GitCommitResponse(BaseModel):
     git: dict
 
 
+class GitStageRequest(BaseModel):
+
+    paths: list[str] = Field(
+        default_factory=list
+    )
+    confirm: bool = False
+
+
+class GitBranchRequest(BaseModel):
+
+    name: str = Field(
+        min_length=1,
+        max_length=120
+    )
+    confirm: bool = False
+
+
+class GitPushRequest(BaseModel):
+
+    branch: str = Field(
+        min_length=1,
+        max_length=120
+    )
+    remote: str = Field(
+        default="origin",
+        min_length=1,
+        max_length=80
+    )
+    confirm: bool = False
+
+
+class GitRollbackRequest(BaseModel):
+
+    commit: str = Field(
+        min_length=7,
+        max_length=40
+    )
+    confirm: bool = False
+
+
 class VoiceStatusResponse(BaseModel):
 
     realtime_available: bool
@@ -513,17 +763,66 @@ class VoiceStatusResponse(BaseModel):
     status: str
 
 
+class VoiceTurnRequest(BaseModel):
+
+    role: str = Field(
+        min_length=1,
+        max_length=40
+    )
+    text: str = Field(
+        min_length=1,
+        max_length=MAX_CHAT_MESSAGE_CHARS
+    )
+    session_id: str = Field(
+        default="",
+        max_length=120
+    )
+
+
+class VoiceFallbackRequest(BaseModel):
+
+    text: str = Field(
+        min_length=1,
+        max_length=MAX_CHAT_MESSAGE_CHARS
+    )
+    mode: str = Field(
+        default="concise",
+        max_length=40
+    )
+    session_id: str = Field(
+        default="frontend-fallback",
+        max_length=120
+    )
+
+
 class AutonomousRunRequest(BaseModel):
 
     objective: str = Field(
         min_length=1,
         max_length=MAX_CHAT_MESSAGE_CHARS
     )
+    max_rounds: int = Field(
+        default=3,
+        ge=1,
+        le=6
+    )
 
 
 class AutonomousRunResponse(BaseModel):
 
     run: dict
+
+
+class SwarmRunRequest(BaseModel):
+
+    objective: str = Field(
+        min_length=1,
+        max_length=MAX_CHAT_MESSAGE_CHARS
+    )
+    conversation_context: str = Field(
+        default="",
+        max_length=MAX_ATTACHMENT_CHARS
+    )
 
 
 class CodeRepairRequest(BaseModel):
@@ -578,7 +877,34 @@ class LoginRequest(BaseModel):
 
 class UserCreateRequest(LoginRequest):
 
+    password: str = Field(
+        min_length=8,
+        max_length=240
+    )
     role: str = "viewer"
+
+
+class PluginUploadRequest(BaseModel):
+
+    name: str = Field(
+        min_length=1,
+        max_length=80
+    )
+    code: str = Field(
+        min_length=1,
+        max_length=250000
+    )
+    version: str = Field(
+        default="1.0.0",
+        max_length=40
+    )
+    description: str = Field(
+        default="",
+        max_length=500
+    )
+    dependencies: list[str] = Field(
+        default_factory=list
+    )
 
 
 MAX_SOURCE_CONTENT_CHARS = int(
@@ -628,6 +954,10 @@ async def request_observability(
         )
     )
     started = time.perf_counter()
+    if request.method == "OPTIONS":
+        return await call_next(
+            request
+        )
     auth_header = request.headers.get(
         "authorization",
         ""
@@ -639,9 +969,29 @@ async def request_observability(
         )
         else ""
     )
+    if not token:
+        token = request.cookies.get(
+            "helios_session",
+            ""
+        )
     user = verify_token(
         token
     ) if token else None
+    api_key_authenticated = bool(
+        API_KEY
+        and request.headers.get(
+            "x-helios-api-key",
+            ""
+        )
+        == API_KEY
+    )
+    if user is None and api_key_authenticated:
+        user = {
+            "sub": "api-key",
+            "username": "api-key",
+            "role": API_KEY_ROLE,
+            "active": True
+        }
     request.state.helios_user = user
 
     if (
@@ -653,16 +1003,22 @@ async def request_observability(
         request.url.path not in PUBLIC_PATHS
         and
         (
-            not API_KEY
-            or request.headers.get(
-                "x-helios-api-key",
-                ""
-            )
-            != API_KEY
+            not api_key_authenticated
         )
         and user is None
     ):
 
+        await run_in_threadpool(
+            record_audit_event,
+            "authentication_denied",
+            actor=client_host,
+            resource=request.url.path,
+            status="401",
+            detail="Missing or invalid HELIOS credentials.",
+            metadata={
+                "request_id": request_id
+            }
+        )
         return JSONResponse(
             status_code=401,
             content={
@@ -689,6 +1045,14 @@ async def request_observability(
         "/auth/users"
     ):
         required_permission = "admin"
+    if request.url.path.startswith(
+        "/audit"
+    ):
+        required_permission = "admin"
+    if request.url.path.startswith(
+        "/plugins"
+    ):
+        required_permission = "admin"
     if (
         required_permission
         and user is not None
@@ -697,6 +1061,21 @@ async def request_observability(
             required_permission
         )
     ):
+        await run_in_threadpool(
+            record_audit_event,
+            "permission_denied",
+            actor=user.get(
+                "username",
+                "token-user"
+            ),
+            resource=request.url.path,
+            status="403",
+            detail=f"Role does not allow '{required_permission}'.",
+            metadata={
+                "request_id": request_id,
+                "required_permission": required_permission
+            }
+        )
         return JSONResponse(
             status_code=403,
             content={
@@ -740,6 +1119,17 @@ async def request_observability(
 
     if not rate_allowed:
 
+        await run_in_threadpool(
+            record_audit_event,
+            "rate_limit_denied",
+            actor=client_host,
+            resource=request.url.path,
+            status="429",
+            detail="HELIOS rate limit exceeded.",
+            metadata={
+                "request_id": request_id
+            }
+        )
         return JSONResponse(
             status_code=429,
             content={
@@ -766,7 +1156,38 @@ async def request_observability(
     response.headers["x-content-type-options"] = "nosniff"
     response.headers["x-frame-options"] = "DENY"
     response.headers["referrer-policy"] = "no-referrer"
+    response.headers["permissions-policy"] = "camera=(), geolocation=(), microphone=(self)"
+    response.headers["content-security-policy"] = "default-src 'none'; frame-ancestors 'none'"
     response.headers["x-helios-storage"] = STORAGE_BACKEND
+
+    if request.method not in {
+        "GET",
+        "HEAD",
+        "OPTIONS"
+    }:
+        await run_in_threadpool(
+            record_audit_event,
+            f"{request.method} {request.url.path}",
+            actor=(
+                user.get(
+                    "username",
+                    "token-user"
+                )
+                if user
+                else "api-key"
+                if api_key_authenticated
+                else client_host
+            ),
+            resource=request.url.path,
+            status=str(
+                response.status_code
+            ),
+            metadata={
+                "request_id": request_id,
+                "client": client_host,
+                "duration_ms": duration_ms
+            }
+        )
 
     return response
 
@@ -800,7 +1221,8 @@ def clean_response(text):
 
 def generate_response(
 
-    user_message
+    user_message,
+    mode="balanced"
 
 ):
 
@@ -817,6 +1239,14 @@ def generate_response(
     combined_prompt = f"""
 
 {SYSTEM_PROMPT}
+
+========================================
+CONVERSATION MODE
+========================================
+
+{mode}
+
+{CONVERSATION_MODES.get(mode, CONVERSATION_MODES["balanced"])}
 
 ========================================
 USER MESSAGE
@@ -944,7 +1374,33 @@ User Message:
     )
 
 
+AI_SETTINGS_FILE = MEMORY_DIR / "settings.json"
+
+
+def load_ai_settings() -> dict:
+
+    try:
+        if AI_SETTINGS_FILE.exists():
+            return json.loads(AI_SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    return {}
+
+
+def save_ai_settings(provider: str, model: str = "") -> dict:
+
+    payload = {
+        "provider": str(provider or "ollama").strip().lower() or "ollama",
+        "model": str(model or "").strip()
+    }
+    AI_SETTINGS_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return payload
+
+
 def get_ai_status():
+
+    provider_preference = load_ai_settings().get("provider", "")
 
     providers = {
         "gemini": {
@@ -1036,14 +1492,19 @@ def get_ai_status():
 
     provider_order = [
         item.strip().lower()
-        for item in os.getenv(
-            "HELIOS_AI_PROVIDER",
-            "ollama,gemini"
-        ).split(",")
+        for item in [provider_preference, *[
+            item.strip().lower()
+            for item in os.getenv(
+                "HELIOS_AI_PROVIDER",
+                "ollama,gemini"
+            ).split(",")
+            if item.strip()
+        ]]
         if item.strip()
     ]
+    provider_order = list(dict.fromkeys(provider_order))
 
-    active_provider = next(
+    available_provider = next(
         (
             provider
             for provider in provider_order
@@ -1051,24 +1512,28 @@ def get_ai_status():
         ),
         None
     )
+    preferred_provider = provider_preference or available_provider or provider_order[0]
+    selected_provider = available_provider or preferred_provider
 
-    if active_provider:
-
-        active = providers[active_provider]
+    if selected_provider and providers.get(selected_provider):
+        selected = providers[selected_provider]
+        preferred_model = load_ai_settings().get("model", "") or selected.get("model") or MODEL_NAME
 
         return {
-            "status": "active",
-            "provider": active_provider,
-            "model": active["model"],
-            "model_available": True,
+            "status": "active" if selected.get("model_available") else "degraded",
+            "provider": selected_provider,
+            "model": preferred_model,
+            "model_available": bool(selected.get("model_available")),
+            "available_models": list(selected.get("available_models", []) or []),
             "providers": providers
         }
 
     return {
         "status": "offline",
-        "provider": None,
-        "model": MODEL_NAME,
+        "provider": preferred_provider,
+        "model": load_ai_settings().get("model", "") or MODEL_NAME,
         "model_available": False,
+        "available_models": [],
         "providers": providers
     }
 
@@ -1098,6 +1563,78 @@ async def root():
 # =========================================
 # HEALTH ENDPOINT
 # =========================================
+
+@app.get("/settings/ai", response_model=AISettingsResponse)
+
+async def get_ai_settings():
+
+    settings = load_ai_settings()
+
+    return AISettingsResponse(
+        provider=str(settings.get("provider", "ollama") or "ollama").strip().lower(),
+        model=str(settings.get("model", "") or "").strip(),
+        saved=True
+    )
+
+
+@app.post("/settings/ai", response_model=AISettingsResponse)
+
+async def update_ai_settings(request: AISettingsRequest):
+
+    settings = save_ai_settings(request.provider, request.model)
+
+    return AISettingsResponse(
+        provider=settings["provider"],
+        model=settings["model"],
+        saved=True
+    )
+
+
+@app.get("/memory")
+
+async def list_memory():
+
+    items = chat_memory.load_memory()
+
+    return {
+        "items": items,
+        "total": len(items)
+    }
+
+
+@app.delete("/memory/{index:int}")
+
+async def delete_memory(index: int):
+
+    items = chat_memory.load_memory()
+
+    if index < 0 or index >= len(items):
+        raise HTTPException(status_code=404, detail="Memory item not found")
+
+    deleted_item = dict(items[index])
+    updated_items = chat_memory.delete_memory_item(items, index)
+
+    return {
+        "deleted": True,
+        "item": deleted_item,
+        "total": len(updated_items)
+    }
+
+
+@app.get("/memory/export")
+
+async def export_memory():
+
+    items = chat_memory.load_memory()
+
+    return JSONResponse(
+        content=items,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": "attachment; filename=helios-memory.json"
+        }
+    )
+
 
 @app.get("/health")
 
@@ -1147,11 +1684,17 @@ async def health():
         "storage":
         storage_status(),
 
+        "vector":
+        vector_status(),
+
         "security":
         {
             "api_key_required": bool(
                 API_KEY
             ),
+            "api_key_role": API_KEY_ROLE
+            if API_KEY
+            else None,
             "token_auth_enabled": bool(
                 os.getenv(
                     "HELIOS_AUTH_SECRET",
@@ -1176,6 +1719,13 @@ async def readiness():
         "auth_secret": bool(
             AUTH_SECRET
         ),
+        "auth_secret_distinct_from_api_key": bool(
+            AUTH_SECRET
+        )
+        and (
+            not API_KEY
+            or AUTH_SECRET != API_KEY
+        ),
         "admin_password": bool(
             os.getenv(
                 "HELIOS_ADMIN_PASSWORD",
@@ -1185,6 +1735,12 @@ async def readiness():
         "cors_restricted": "*" not in parse_csv_env(
             "HELIOS_CORS_ORIGINS",
             "http://localhost:3000"
+        ),
+        "plugin_signing_key": bool(
+            os.getenv(
+                "HELIOS_PLUGIN_SIGNING_KEY",
+                ""
+            ).strip()
         ),
         "voice_provider": bool(
             os.getenv(
@@ -1196,7 +1752,9 @@ async def readiness():
     required_checks = {
         key: value
         for key, value in checks.items()
-        if key != "voice_provider"
+        if key not in {
+            "voice_provider"
+        }
     }
     ready = all(
         required_checks.values()
@@ -1220,7 +1778,8 @@ async def readiness():
 @app.post("/auth/login")
 
 async def login(
-    request: LoginRequest
+    request: LoginRequest,
+    response: Response
 ):
 
     user = await run_in_threadpool(
@@ -1244,8 +1803,56 @@ async def login(
                 error
             )
         ) from error
+    response.set_cookie(
+        "helios_session",
+        token,
+        httponly=True,
+        secure=AUTH_COOKIE_SECURE,
+        samesite="strict",
+        max_age=TOKEN_TTL_MINUTES * 60,
+        path="/"
+    )
     return {
         "token": token,
+        "user": user
+    }
+
+
+@app.post("/auth/logout")
+
+async def logout_user(
+    response: Response
+):
+
+    response.delete_cookie(
+        "helios_session",
+        path="/",
+        secure=AUTH_COOKIE_SECURE,
+        httponly=True,
+        samesite="strict"
+    )
+    return {
+        "status": "signed_out"
+    }
+
+
+@app.get("/auth/me")
+
+async def current_user(
+    request: Request
+):
+
+    user = getattr(
+        request.state,
+        "helios_user",
+        None
+    )
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required."
+        )
+    return {
         "user": user
     }
 
@@ -1288,6 +1895,64 @@ async def add_user(
         "user": user
     }
 
+
+@app.get("/plugins")
+async def list_plugins_endpoint():
+    return {
+        "plugins": await run_in_threadpool(
+            list_plugin_catalog
+        ),
+        "tools_count": len(list_tools())
+    }
+
+@app.post("/plugins/upload")
+async def upload_plugin(request: PluginUploadRequest):
+    try:
+        file_path = await run_in_threadpool(
+            save_plugin_code,
+            request.name,
+            request.code,
+            version=request.version,
+            description=request.description,
+            dependencies=request.dependencies
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                error
+            )
+        ) from error
+    loaded = await run_in_threadpool(
+        load_plugins
+    )
+    return {
+        "status": "success",
+        "message": f"Plugin {file_path.name} uploaded and loaded.",
+        "loaded_plugins": loaded
+    }
+
+
+@app.delete("/plugins/{name}")
+async def delete_plugin(
+    name: str
+):
+    try:
+        filename = await run_in_threadpool(
+            uninstall_plugin,
+            name
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=404,
+            detail=str(
+                error
+            )
+        ) from error
+    return {
+        "status": "success",
+        "message": f"Plugin {filename} uninstalled."
+    }
 
 @app.get("/missions/events", response_model=MissionEventsResponse)
 
@@ -1346,7 +2011,8 @@ async def create_autonomous_run(
 
     run = await run_in_threadpool(
         create_run,
-        request.objective
+        request.objective,
+        request.max_rounds
     )
     run = await run_in_threadpool(
         queue_run,
@@ -1356,6 +2022,75 @@ async def create_autonomous_run(
     return AutonomousRunResponse(
         run=run
     )
+
+
+@app.get("/swarm/runs")
+
+async def swarm_runs(
+    limit: int = 20
+):
+
+    safe_limit = max(
+        1,
+        min(
+            limit,
+            100
+        )
+    )
+    return {
+        "runs": [
+            await run_in_threadpool(
+                reconcile_swarm_run,
+                run[
+                    "id"
+                ]
+            )
+            for run in load_swarm_runs()[
+                -safe_limit:
+            ]
+        ]
+    }
+
+
+@app.post("/swarm/runs")
+
+async def create_isolated_swarm_run(
+    request: SwarmRunRequest
+):
+
+    run = await run_in_threadpool(
+        create_swarm_run,
+        request.objective,
+        "",
+        "",
+        request.conversation_context
+    )
+    return {
+        "run": run
+    }
+
+
+@app.get("/swarm/runs/{run_id}")
+
+async def isolated_swarm_run(
+    run_id: str
+):
+
+    try:
+        run = await run_in_threadpool(
+            reconcile_swarm_run,
+            run_id
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=404,
+            detail=str(
+                error
+            )
+        ) from error
+    return {
+        "run": run
+    }
 
 
 @app.get("/autonomy/runs/{run_id}", response_model=AutonomousRunResponse)
@@ -1500,6 +2235,20 @@ async def git_status_endpoint():
     )
 
 
+@app.get("/git/diff")
+
+async def git_diff_endpoint(
+    staged: bool = False,
+    path: str | None = None
+):
+
+    return await run_in_threadpool(
+        git_diff,
+        staged,
+        path
+    )
+
+
 @app.post("/git/commit", response_model=GitCommitResponse)
 
 async def git_commit_endpoint(
@@ -1512,6 +2261,59 @@ async def git_commit_endpoint(
             request.message,
             request.confirm
         )
+    )
+
+
+@app.post("/git/stage")
+
+async def git_stage_endpoint(
+    request: GitStageRequest
+):
+
+    return await run_in_threadpool(
+        stage_files,
+        request.paths,
+        request.confirm
+    )
+
+
+@app.post("/git/branch")
+
+async def git_branch_endpoint(
+    request: GitBranchRequest
+):
+
+    return await run_in_threadpool(
+        create_branch,
+        request.name,
+        request.confirm
+    )
+
+
+@app.post("/git/push")
+
+async def git_push_endpoint(
+    request: GitPushRequest
+):
+
+    return await run_in_threadpool(
+        push_branch,
+        request.branch,
+        request.remote,
+        request.confirm
+    )
+
+
+@app.post("/git/rollback")
+
+async def git_rollback_endpoint(
+    request: GitRollbackRequest
+):
+
+    return await run_in_threadpool(
+        rollback_commit,
+        request.commit,
+        request.confirm
     )
 
 
@@ -1555,6 +2357,87 @@ async def observability(
             safe_limit
         )
     )
+
+
+@app.get("/audit")
+
+async def audit_events(
+    limit: int = 100
+):
+
+    return {
+        "events": await run_in_threadpool(
+            load_audit_events,
+            limit
+        ),
+        "chain": await run_in_threadpool(
+            verify_audit_chain
+        )
+    }
+
+
+@app.get("/approvals")
+async def approval_requests(
+    status: str | None = None,
+    limit: int = 50
+):
+
+    return {
+        "approvals": await run_in_threadpool(
+            list_approval_requests,
+            status,
+            limit
+        )
+    }
+
+
+@app.post("/approvals/{approval_id}")
+async def decide_approval(
+    approval_id: str,
+    request: ApprovalDecisionRequest,
+    http_request: Request
+):
+
+    user = getattr(
+        http_request.state,
+        "helios_user",
+        None
+    ) or {}
+    actor = user.get(
+        "username",
+        "api-key"
+    )
+    approval = await run_in_threadpool(
+        update_approval_request,
+        approval_id,
+        request.status,
+        approved_by=actor
+    )
+    if not approval:
+        raise HTTPException(
+            status_code=404,
+            detail="Approval request not found."
+        )
+    await run_in_threadpool(
+        record_audit_event,
+        f"approval_{request.status}",
+        actor=actor,
+        resource=approval.get(
+            "tool",
+            ""
+        ),
+        status=request.status,
+        detail=approval.get(
+            "reason",
+            ""
+        ),
+        metadata={
+            "approval_id": approval_id
+        }
+    )
+    return {
+        "approval": approval
+    }
 
 
 @app.get("/metrics")
@@ -1611,7 +2494,8 @@ async def execution_events(
 @app.post("/tools/execute", response_model=ToolExecuteResponse)
 
 async def execute_tool_endpoint(
-    request: ToolExecuteRequest
+    request: ToolExecuteRequest,
+    http_request: Request
 ):
 
     module = request.module.strip().lower()
@@ -1623,8 +2507,158 @@ async def execute_tool_endpoint(
             detail=f"Unsupported HELIOS module: {module}"
         )
 
+    user = getattr(
+        http_request.state,
+        "helios_user",
+        None
+    )
+    actor = (
+        user.get(
+            "username",
+            "token-user"
+        )
+        if user
+        else "HELIOS Dashboard"
+    )
+    if (
+        request.tool == "deploy_project"
+        and not (
+            (
+                API_KEY
+                and http_request.headers.get(
+                    "x-helios-api-key",
+                    ""
+                )
+                == API_KEY
+            )
+            or (
+                user is not None
+                and has_permission(
+                    user,
+                    "admin"
+                )
+            )
+        )
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Deployments require an admin account or HELIOS API key."
+        )
+
+    if (
+        request.tool in APPROVAL_REQUIRED_TOOLS
+    ):
+        approval_payload = {
+            "tool": request.tool,
+            "args": request.args,
+            "kwargs": request.kwargs,
+            "agent": request.agent,
+            "module": module,
+            "retries": request.retries
+        }
+        if not request.approval_id:
+            approval = await run_in_threadpool(
+                create_approval_request,
+                request.tool,
+                approval_payload,
+                actor=actor,
+                module=module,
+                reason="This tool can modify project state and requires explicit approval."
+            )
+            await run_in_threadpool(
+                record_audit_event,
+                "approval_requested",
+                actor=actor,
+                resource=request.tool,
+                status="pending",
+                detail="State-changing tool execution is waiting for approval.",
+                metadata={
+                    "approval_id": approval.get(
+                        "id"
+                    )
+                }
+            )
+            return ToolExecuteResponse(
+                tool=request.tool,
+                status="approval_required",
+                result={
+                    "reason": "This tool can modify project state and requires explicit approval.",
+                    "approval_id": approval.get(
+                        "id"
+                    ),
+                    "approval": approval
+                },
+                events=[],
+                stats=execution_memory.execution_stats(),
+                trace_id=approval.get(
+                    "id"
+                ),
+                approval={
+                    "required": True,
+                    "approval_id": approval.get(
+                        "id"
+                    ),
+                    "status": approval.get(
+                        "status"
+                    ),
+                    "reason": "This tool can modify project state and requires explicit approval.",
+                    "confirm_field": "approval_id"
+                },
+                retry_policy={
+                    "requested_retries": request.retries,
+                    "max_retries": 2,
+                    "retryable_statuses": [
+                        "failed",
+                        "blocked"
+                    ]
+                }
+            )
+        approval = await run_in_threadpool(
+            get_approval_request,
+            request.approval_id
+        )
+        if not approval:
+            raise HTTPException(
+                status_code=404,
+                detail="Approval request not found."
+            )
+        if approval.get(
+            "tool"
+        ) != request.tool or approval.get(
+            "status"
+        ) != "approved":
+            return ToolExecuteResponse(
+                tool=request.tool,
+                status="approval_required",
+                result={
+                    "reason": "The referenced approval is not approved for this tool.",
+                    "approval": approval
+                },
+                events=[],
+                stats=execution_memory.execution_stats(),
+                trace_id=request.approval_id,
+                approval={
+                    "required": True,
+                    "approval_id": request.approval_id,
+                    "status": approval.get(
+                        "status"
+                    )
+                },
+                retry_policy={
+                    "requested_retries": request.retries,
+                    "max_retries": 2,
+                    "retryable_statuses": [
+                        "failed",
+                        "blocked"
+                    ]
+                }
+            )
+
     before_count = len(
         execution_memory.load_execution_memory()
+    )
+    trace_id = str(
+        uuid.uuid4()
     )
 
     try:
@@ -1637,6 +2671,11 @@ async def execute_tool_endpoint(
                 request.tool,
                 *request.args,
                 retries=request.retries,
+                metadata={
+                    "source": "api",
+                    "trace_id": trace_id,
+                    "approval_id": request.approval_id
+                },
                 **request.kwargs
             )
 
@@ -1646,13 +2685,22 @@ async def execute_tool_endpoint(
                 execute_tool,
                 request.tool,
                 *request.args,
-                actor="HELIOS Dashboard",
+                actor=actor,
                 module=module,
                 retries=request.retries,
                 metadata={
-                    "source": "api"
+                    "source": "api",
+                    "trace_id": trace_id,
+                    "approval_id": request.approval_id
                 },
                 **request.kwargs
+            )
+        if request.approval_id:
+            await run_in_threadpool(
+                update_approval_request,
+                request.approval_id,
+                "used",
+                approved_by=actor
             )
 
         events = execution_memory.load_execution_memory()[
@@ -1684,7 +2732,23 @@ async def execute_tool_endpoint(
             status=status,
             result=result,
             events=events,
-            stats=execution_memory.execution_stats()
+            stats=execution_memory.execution_stats(),
+            trace_id=trace_id,
+            approval={
+                "required": request.tool in APPROVAL_REQUIRED_TOOLS,
+                "granted": bool(
+                    request.approval_id
+                ),
+                "approval_id": request.approval_id
+            },
+            retry_policy={
+                "requested_retries": request.retries,
+                "max_retries": 2,
+                "retryable_statuses": [
+                    "failed",
+                    "blocked"
+                ]
+            }
         )
 
     except Exception as error:
@@ -1700,7 +2764,23 @@ async def execute_tool_endpoint(
                 error
             ),
             events=events,
-            stats=execution_memory.execution_stats()
+            stats=execution_memory.execution_stats(),
+            trace_id=trace_id,
+            approval={
+                "required": request.tool in APPROVAL_REQUIRED_TOOLS,
+                "granted": bool(
+                    request.approval_id
+                ),
+                "approval_id": request.approval_id
+            },
+            retry_policy={
+                "requested_retries": request.retries,
+                "max_retries": 2,
+                "retryable_statuses": [
+                    "failed",
+                    "blocked"
+                ]
+            }
         )
 
 
@@ -1834,6 +2914,129 @@ async def run_mission_endpoint(
     )
 
 
+@app.post("/missions/{mission_id}/recover")
+
+async def recover_mission_endpoint(
+    mission_id: str
+):
+
+    try:
+        result = await run_in_threadpool(
+            recover_mission,
+            mission_id
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=404,
+            detail=str(
+                error
+            )
+        ) from error
+    return {
+        **result,
+        "missions": latest_missions(),
+        "stats": mission_stats(),
+        "agents": agent_activity()
+    }
+
+
+@app.get("/missions/{mission_id}/export")
+
+async def export_mission(
+    mission_id: str
+):
+
+    events = [
+        event
+        for event in load_mission_events()
+        if event.get(
+            "mission_id"
+        )
+        == mission_id
+    ]
+    if not events:
+        raise HTTPException(
+            status_code=404,
+            detail="Mission not found."
+        )
+    return {
+        "mission": next(
+            (
+                mission
+                for mission in latest_missions(
+                    limit=100
+                )
+                if mission.get(
+                    "id"
+                )
+                == mission_id
+            ),
+            None
+        ),
+        "events": events,
+        "exported_at": time.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+    }
+
+
+@app.get("/exports/{kind}")
+
+async def export_project_data(
+    kind: str
+):
+
+    export_kind = kind.strip().lower()
+    exporters = {
+        "memory": lambda: {
+            "conversations": chat_memory.load_memory()
+        },
+        "sources": lambda: {
+            "sources": load_sources(),
+            "stats": source_stats()
+        },
+        "project-brain": lambda: build_project_brain(
+            25
+        ),
+        "report": lambda: {
+            "health": {
+                "storage": storage_status(),
+                "sources": source_stats(),
+                "missions": mission_stats(),
+                "execution": execution_memory.execution_stats()
+            },
+            "observability": build_observability_report(
+                500
+            ),
+            "project_brain": build_project_brain(
+                25
+            )
+        },
+        "transcripts": lambda: {
+            "turns": load_voice_transcripts(100)
+        },
+        "missions": lambda: {
+            "missions": latest_missions(limit=100)
+        }
+    }
+    if export_kind not in exporters:
+        raise HTTPException(
+            status_code=404,
+            detail="Supported exports: memory, sources, project-brain, report, transcripts, missions."
+        )
+    return {
+        "kind": export_kind,
+        "exported_at": time.strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        "data": await run_in_threadpool(
+            exporters[
+                export_kind
+            ]
+        )
+    }
+
+
 @app.get("/sources")
 
 async def sources():
@@ -1906,8 +3109,80 @@ async def source_intelligence(
         grounded_answer=grounding["grounded_answer"],
         coverage=grounding["coverage"],
         stats=stats,
-        graph=grounding["graph"]
+        graph=grounding["graph"],
+        enforcement=grounding["enforcement"]
     )
+
+
+@app.post("/sources/{source_id}/reindex")
+
+async def reindex_existing_source(source_id: str):
+
+    try:
+        result = await run_in_threadpool(
+            reindex_source,
+            source_id
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=404,
+            detail=str(error)
+        ) from error
+
+    await run_in_threadpool(
+        record_mission_event,
+        "Executed",
+        f"Reindexed source: {result['name']}",
+        agent="Nova",
+        module="knowledge",
+        status="executed",
+        detail="Source content was refreshed in the indexed library."
+    )
+
+    return {
+        "source": {
+            key: value
+            for key, value in result.items()
+            if key != "stats" and key != "reindexed"
+        },
+        "stats": result.get("stats", source_stats())
+    }
+
+
+@app.delete("/sources/{source_id}")
+
+async def remove_source(source_id: str):
+
+    try:
+        result = await run_in_threadpool(
+            delete_source,
+            source_id
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=404,
+            detail=str(error)
+        ) from error
+
+    await run_in_threadpool(
+        record_mission_event,
+        "Archived",
+        f"Removed source: {result['name']}",
+        agent="Nova",
+        module="knowledge",
+        status="archived",
+        detail="Source record deleted from the indexed library."
+    )
+
+    return {
+        "deleted": True,
+        "source": {
+            key: value
+            for key, value in result.items()
+            if key != "stats" and key != "deleted"
+        },
+        "stats": result.get("stats", source_stats())
+    }
 
 
 @app.post("/sources", response_model=SourceResponse)
@@ -1917,7 +3192,15 @@ async def save_source(
 ):
 
     source_name = request.name.strip()
-    source_content = request.content[:MAX_SOURCE_CONTENT_CHARS]
+    source_type = request.type.strip().upper()
+    source_content = (
+        request.content
+        if source_type in {
+            "PDF",
+            "DOCX"
+        }
+        else request.content[:MAX_SOURCE_CONTENT_CHARS]
+    )
 
     if not source_name:
 
@@ -1926,14 +3209,22 @@ async def save_source(
             detail="Source name is required."
         )
 
-    source = await run_in_threadpool(
-        upsert_source,
-        source_name,
-        request.type,
-        request.size,
-        source_content,
-        request.scope
-    )
+    try:
+        source = await run_in_threadpool(
+            upsert_source,
+            source_name,
+            source_type,
+            request.size,
+            source_content,
+            request.scope
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(
+                error
+            )
+        ) from error
 
     await run_in_threadpool(
         record_mission_event,
@@ -1975,17 +3266,18 @@ async def chat(
             detail=f"Unsupported conversation mode: {request.mode}"
         )
 
+    evidence = await run_in_threadpool(
+        search_sources,
+        request.message,
+        8
+    )
+    grounding = build_grounded_research_artifact(
+        request.message,
+        evidence,
+        source_stats()
+    )
+
     if request.module == "research":
-        evidence = await run_in_threadpool(
-            search_sources,
-            request.message,
-            8
-        )
-        grounding = build_grounded_research_artifact(
-            request.message,
-            evidence,
-            source_stats()
-        )
         return ChatResponse(
             response=grounding["grounded_answer"],
             module=request.module,
@@ -2005,7 +3297,8 @@ async def chat(
                 }
             ],
             citations=grounding["citations"],
-            grounded=grounding["coverage"]["grounded"]
+            grounded=grounding["coverage"]["enforced"],
+            enforcement=grounding["enforcement"]
         )
 
     if (
@@ -2024,10 +3317,16 @@ async def chat(
             detail="Direct dashboard request received."
         )
 
-        response = await run_in_threadpool(
-            generate_response,
-            request.message
-        )
+        if request.require_grounding and not grounding["coverage"]["enforced"]:
+            response = grounding["grounded_answer"]
+        elif grounding["coverage"]["enforced"]:
+            response = grounding["grounded_answer"]
+        else:
+            response = await run_in_threadpool(
+                generate_response,
+                request.message,
+                request.mode
+            )
 
         await run_in_threadpool(
             record_mission_event,
@@ -2058,7 +3357,10 @@ async def chat(
                     "agent": request.agent,
                     "objective": "Direct response"
                 }
-            ]
+            ],
+            citations=grounding["citations"],
+            grounded=grounding["coverage"]["enforced"],
+            enforcement=grounding["enforcement"]
         )
 
     response = await run_in_threadpool(
@@ -2082,13 +3384,21 @@ async def chat(
 
     status = cognitive_engine.status()
 
+    grounded = grounding["coverage"]["enforced"]
     return ChatResponse(
-        response=clean_response(response),
+        response=clean_response(
+            grounding["grounded_answer"]
+            if grounded or request.require_grounding
+            else response
+        ),
         module=request.module,
         agent=request.agent,
         mode=request.mode,
         trace=status.get("trace", []),
-        plan=status.get("plan", [])
+        plan=status.get("plan", []),
+        citations=grounding["citations"],
+        grounded=grounded,
+        enforcement=grounding["enforcement"]
     )
 
 
@@ -2113,6 +3423,93 @@ async def voice_status():
         if key_configured
         else "missing_openai_key"
     )
+
+
+@app.get("/conversation/modes")
+
+async def conversation_modes():
+
+    return {
+        "default": "balanced",
+        "modes": [
+            {
+                "id": mode,
+                "directive": directive,
+                **CONVERSATION_MODE_CONFIG[
+                    mode
+                ]
+            }
+            for mode, directive in CONVERSATION_MODES.items()
+        ]
+    }
+
+
+@app.get("/voice/transcripts")
+
+async def voice_transcripts(
+    limit: int = 100
+):
+
+    return {
+        "turns": await run_in_threadpool(
+            load_voice_transcripts,
+            limit
+        )
+    }
+
+
+@app.post("/voice/transcripts")
+
+async def persist_voice_transcript(
+    request: VoiceTurnRequest
+):
+
+    return {
+        "turn": await run_in_threadpool(
+            save_voice_turn,
+            request.role,
+            request.text,
+            request.session_id
+        )
+    }
+
+
+@app.post("/voice/fallback")
+
+async def voice_fallback(
+    request: VoiceFallbackRequest
+):
+
+    mode = request.mode.strip().lower()
+    if mode not in CONVERSATION_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported conversation mode: {mode}"
+        )
+    await run_in_threadpool(
+        save_voice_turn,
+        "you",
+        request.text,
+        request.session_id
+    )
+    response = await run_in_threadpool(
+        generate_response,
+        request.text,
+        mode
+    )
+    turn = await run_in_threadpool(
+        save_voice_turn,
+        "helios",
+        response,
+        request.session_id
+    )
+    return {
+        "response": response,
+        "turn": turn,
+        "mode": mode,
+        "playback": "browser_speech_synthesis",
+        "provider_independent": True
+    }
 
 
 @app.post("/realtime/session")
@@ -2254,8 +3651,23 @@ async def websocket_endpoint(
             # RECEIVE MESSAGE
             # =================================
 
-            user_message = await (
+            raw_message = await (
                 websocket.receive_text()
+            )
+            try:
+                stream_payload = json.loads(
+                    raw_message
+                )
+            except json.JSONDecodeError:
+                stream_payload = {
+                    "message": raw_message,
+                    "stream": False
+                }
+            user_message = str(
+                stream_payload.get(
+                    "message",
+                    raw_message
+                )
             )
 
             logger.info(
@@ -2269,12 +3681,89 @@ async def websocket_endpoint(
 
             ai_response = await run_in_threadpool(
                 generate_cognitive_response,
-                user_message
+                user_message,
+                str(
+                    stream_payload.get(
+                        "module",
+                        "dashboard"
+                    )
+                ),
+                str(
+                    stream_payload.get(
+                        "agent",
+                        "HELIOS"
+                    )
+                ),
+                str(
+                    stream_payload.get(
+                        "mode",
+                        "balanced"
+                    )
+                ),
+                stream_payload.get(
+                    "attachments",
+                    []
+                )
             )
+            status = cognitive_engine.status()
 
             # =================================
             # SEND RESPONSE
             # =================================
+
+            if stream_payload.get(
+                "stream",
+                False
+            ):
+                message_id = str(
+                    uuid.uuid4()
+                )
+                await websocket.send_json(
+                    {
+                        "type": "chat.start",
+                        "id": message_id,
+                        "module": stream_payload.get(
+                            "module",
+                            "dashboard"
+                        )
+                    }
+                )
+                chunks = str(
+                    ai_response
+                ).split(
+                    " "
+                )
+                for index, chunk in enumerate(
+                    chunks
+                ):
+                    await websocket.send_json(
+                        {
+                            "type": "chat.delta",
+                            "id": message_id,
+                            "delta": chunk
+                            + (
+                                " "
+                                if index < len(
+                                    chunks
+                                )
+                                - 1
+                                else ""
+                            )
+                        }
+                    )
+                    await asyncio.sleep(
+                        0
+                    )
+                await websocket.send_json(
+                    {
+                        "type": "chat.done",
+                        "id": message_id,
+                        "response": ai_response,
+                        "trace": status.get("trace", []),
+                        "plan": status.get("plan", [])
+                    }
+                )
+                continue
 
             await websocket.send_text(
                 ai_response

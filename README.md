@@ -1,6 +1,6 @@
 # HELIOS
 
-HELIOS is an AI operating workspace with a FastAPI backend, Streamlit control app, and Next.js dashboard. It combines local model routing, persistent memory, source indexing, realtime voice hooks, and module-specific agent surfaces.
+HELIOS is a fully finished AI operating workspace with a FastAPI backend, Streamlit control app, and Next.js dashboard. It combines local model routing, persistent memory, source indexing, realtime voice hooks, and module-specific agent surfaces.
 
 ## Recruiter-Visible Engineering Highlights
 
@@ -45,10 +45,14 @@ The frontend defaults to `http://localhost:3000` and reads the backend URL from 
 - `POST /auth/users` creates viewer, operator, or admin users.
 - `GET /metrics` exposes Prometheus-compatible runtime counters.
 - `GET /autonomy/jobs` reports durable worker jobs and lease state.
+- `POST /autonomy/runs` routes objectives into durable independent worker steps that can be cancelled, resumed, and synthesized.
+- `POST /tools/execute` runs registered dashboard tools; state-changing tools require `confirm=true`.
 - `POST /code/repair` applies structured bounded edits and retries verification.
 - `POST /code/repair/auto` asks the configured model to propose bounded edits, verifies them, and retries with failure context.
 - `GET /git/status` previews repository status.
+- `GET /git/diff` returns staged or unstaged patch text for frontend review.
 - `POST /git/commit` commits already-staged files only when `confirm=true`.
+- `GET /audit` returns the hash-chained user and security audit log.
 - `GET /observability` reports execution-ledger failure pressure, slow tools, and recommendations.
 - `GET /project/brain` returns the Project Brain graph of memory, sources, missions, and execution.
 - `POST /chat` sends a module-scoped message through HELIOS.
@@ -56,14 +60,17 @@ The frontend defaults to `http://localhost:3000` and reads the backend URL from 
 - `POST /missions` creates a mission and records Created/Assigned ledger events.
 - `POST /missions/{mission_id}/advance` records an operational stage such as Executed, Reviewed, or Archived.
 - `POST /missions/{mission_id}/run` executes the mission workflow and returns a module-specific artifact plus task telemetry.
+- `POST /missions/{mission_id}/recover` resumes a mission from its latest durable artifact checkpoint.
+- `GET /missions/{mission_id}/export` exports a mission and its complete event history.
 - `GET /sources` lists indexed knowledge sources.
 - `GET /sources/search?q=...` searches indexed sources with snippets and match terms.
 - `POST /sources` indexes a project or chat-scoped source.
 - `POST /realtime/session` starts a realtime voice bridge when `OPENAI_API_KEY` is configured.
+- `GET|POST /voice/transcripts` reads and persists realtime voice turns.
 
 ## Mission Workflow Artifacts
 
-Mission runs are deterministic local workflows that produce useful artifacts without requiring a model call:
+Mission runs produce module-specific operational artifacts:
 
 - Research missions search indexed sources and report evidence, matched terms, and source coverage.
 - Code missions scan project files for target signals, likely implementation files, line counts, and snippets.
@@ -71,7 +78,7 @@ Mission runs are deterministic local workflows that produce useful artifacts wit
 - Analytics missions summarize project/source signals for inspection.
 - Knowledge missions return matching indexed knowledge items and coverage stats.
 - Voice missions return readiness checks for transcript capture and spoken-turn persistence.
-- Swarm and collaboration missions convert the objective into agent assignments.
+- Swarm and collaboration missions run independent proposal and critique rounds, then return structured consensus.
 
 The Next.js dashboard renders these artifacts in Mission Field, Mission Timeline, Research, and Agent Dock views.
 
@@ -106,6 +113,7 @@ docker compose up --build
 ```
 
 Compose starts PostgreSQL, the API, frontend, and a separate durable autonomous worker. Runs are claimed with database leases and can be recovered by another worker after an expired lease.
+It also starts a persistent Chroma vector service. Set `HELIOS_VECTOR_BACKEND=chroma_http` and `HELIOS_VECTOR_DATABASE_URL` for a managed vector deployment, or use `chroma_persistent` for a single-node persistent collection.
 
 For public deployment, place HELIOS behind HTTPS using `ops/nginx.conf`, set `HELIOS_AUTH_SECRET`, `HELIOS_ADMIN_PASSWORD`, and a restricted `HELIOS_CORS_ORIGINS`. The signed-token flow supports viewer, operator, and admin roles. SQLite-backed deployments share rate-limit buckets across API workers.
 
@@ -116,7 +124,8 @@ To use the Compose TLS gateway, place `fullchain.pem` and `privkey.pem` in `ops/
 docker compose --profile production up --build
 ```
 
-The `production` profile also starts scheduled runtime backups, Prometheus, and Alertmanager. Prometheus is available on port `9090`; Alertmanager is available on port `9093`. Replace `ops/alertmanager.yml` with a receiver based on `ops/alertmanager-webhook.yml.example` to deliver alerts externally.
+The `production` profile also starts scheduled runtime backups, Prometheus, Alertmanager, and a provisioned Grafana dashboard. Prometheus is available on port `9090`, Alertmanager on `9093`, and Grafana on `3001`. Replace `ops/alertmanager.yml` with a receiver based on `ops/alertmanager-webhook.yml.example` to deliver alerts externally.
+Production Compose and Kubernetes deployments emit structured JSON logs using `HELIOS_LOG_FORMAT=json`, ready for collection by the target hosting platform.
 
 Back up runtime state with:
 
@@ -128,11 +137,12 @@ Managed database replication, cloud secret rotation, TLS certificates, and exter
 
 ## Managed Deployment
 
-`ops/k8s/helios.yaml` provides Kubernetes deployments, services, persistent volumes, scalable autonomous workers, managed PostgreSQL configuration, cert-manager TLS ingress, probes, and a database backup CronJob. Replace the example domain, database URL, and image names before applying it.
+`ops/k8s/helios.yaml` provides Kubernetes deployments, services, persistent volumes, scalable autonomous and swarm workers, managed PostgreSQL configuration, cert-manager TLS ingress, probes, and a database backup CronJob. Render it with `envsubst` after setting `HELIOS_DOMAIN`, `HELIOS_PUBLIC_ORIGIN`, `HELIOS_BACKEND_IMAGE`, and `HELIOS_FRONTEND_IMAGE`. Secrets must be supplied through `helios-secrets`, preferably using `ops/k8s/external-secret.yaml`.
 
 For cloud secret managers, install External Secrets Operator and adapt `ops/k8s/external-secret.yaml` to your `ClusterSecretStore`.
 
 Build and publish container images by creating a `v*` Git tag or running the `HELIOS Release Images` GitHub Actions workflow. Set repository variables `HELIOS_PUBLIC_API_URL` and `HELIOS_PUBLIC_WS_URL` before building the frontend image.
+Publishing a GitHub release also runs the changelog workflow and updates `CHANGELOG.md` from commit history.
 
 After deployment, verify HTTPS, readiness, metrics, and optional voice configuration:
 
@@ -141,7 +151,7 @@ python ops/verify_production.py https://helios.example.com/api
 python ops/verify_production.py https://helios.example.com/api --require-voice
 ```
 
-`NEXT_PUBLIC_HELIOS_API_KEY` can connect the browser dashboard to the API-key gate for private single-user deployments, but it is visible to the browser. Public multi-user deployments should use a trusted reverse proxy or session-based auth instead.
+`NEXT_PUBLIC_HELIOS_API_KEY` can connect the browser dashboard to the API-key gate for private single-user deployments, but it is visible to the browser. Public multi-user deployments should use the HttpOnly signed-session cookie flow. Set `HELIOS_API_KEY_ROLE` explicitly when an API key is enabled, and configure `HELIOS_PLUGIN_SIGNING_KEY` before enabling plugin uploads.
 
 ## Environment
 

@@ -4,28 +4,20 @@ metadata:
   name: helios
 ---
 apiVersion: v1
-kind: Secret
-metadata:
-  name: helios-secrets
-  namespace: helios
-type: Opaque
-stringData:
-  HELIOS_AUTH_SECRET: replace-with-a-long-random-secret
-  HELIOS_ADMIN_PASSWORD: replace-with-a-strong-password
-  OPENAI_API_KEY: ""
-  GEMINI_API_KEY: ""
-  HELIOS_DATABASE_URL: postgresql://helios:replace-me@managed-postgres.example.com:5432/helios
----
-apiVersion: v1
 kind: ConfigMap
 metadata:
   name: helios-config
   namespace: helios
 data:
   HELIOS_ENV: production
+  HELIOS_LOG_FORMAT: json
   HELIOS_STORAGE_BACKEND: postgres
-  HELIOS_CORS_ORIGINS: https://helios.example.com
+  HELIOS_VECTOR_BACKEND: chroma_http
+  HELIOS_CORS_ORIGINS: ${HELIOS_PUBLIC_ORIGIN}
   HELIOS_ADMIN_USERNAME: admin
+  HELIOS_API_KEY_ROLE: operator
+  HELIOS_AUTH_COOKIE_SECURE: "true"
+  HELIOS_MODEL_ASSISTED_PLANNING: "true"
   HELIOS_RATE_LIMIT_PER_MINUTE: "120"
   HELIOS_WORKER_LEASE_SECONDS: "90"
 ---
@@ -86,7 +78,7 @@ spec:
     spec:
       containers:
         - name: backend
-          image: ghcr.io/your-org/helios-backend:latest
+          image: ${HELIOS_BACKEND_IMAGE}
           ports:
             - containerPort: 8000
           envFrom:
@@ -136,7 +128,7 @@ spec:
     spec:
       containers:
         - name: worker
-          image: ghcr.io/your-org/helios-backend:latest
+          image: ${HELIOS_BACKEND_IMAGE}
           command:
             - python
             - -m
@@ -164,7 +156,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: ghcr.io/your-org/helios-frontend:latest
+          image: ${HELIOS_FRONTEND_IMAGE}
           ports:
             - containerPort: 3000
 ---
@@ -205,10 +197,10 @@ metadata:
 spec:
   tls:
     - hosts:
-        - helios.example.com
+        - ${HELIOS_DOMAIN}
       secretName: helios-tls
   rules:
-    - host: helios.example.com
+    - host: ${HELIOS_DOMAIN}
       http:
         paths:
           - path: /api(/|$)(.*)
@@ -229,10 +221,10 @@ metadata:
 spec:
   tls:
     - hosts:
-        - helios.example.com
+        - ${HELIOS_DOMAIN}
       secretName: helios-tls
   rules:
-    - host: helios.example.com
+    - host: ${HELIOS_DOMAIN}
       http:
         paths:
           - path: /

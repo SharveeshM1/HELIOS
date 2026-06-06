@@ -16,6 +16,7 @@ def execute_agent_tool(
     tool_name,
     *args,
     retries=0,
+    metadata=None,
     **kwargs
 
 ):
@@ -51,6 +52,14 @@ def execute_agent_tool(
     # EXECUTE
     # =====================================
 
+    safe_metadata = {
+        **(
+            metadata
+            or {}
+        ),
+        "agent_key": agent_key
+    }
+
     return execute_tool(
 
         tool_name,
@@ -65,9 +74,7 @@ def execute_agent_tool(
 
         retries=retries,
 
-        metadata={
-            "agent_key": agent_key
-        },
+        metadata=safe_metadata,
 
         **kwargs
     )

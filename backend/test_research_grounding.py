@@ -30,6 +30,8 @@ def test_grounded_research_artifact_requires_citations_for_claims():
     ]
     assert "[S1]" in artifact["grounded_answer"]
     assert artifact["coverage"]["grounded"] is True
+    assert artifact["coverage"]["enforced"] is True
+    assert artifact["enforcement"]["policy"] == "cite_or_refuse"
 
 
 def test_grounded_research_artifact_refuses_unsupported_answer():
@@ -45,6 +47,32 @@ def test_grounded_research_artifact_refuses_unsupported_answer():
     assert artifact["claims"] == []
     assert "should not make source-backed claims" in artifact["grounded_answer"]
     assert artifact["coverage"]["grounded"] is False
+    assert artifact["coverage"]["enforced"] is False
+
+
+def test_grounded_research_artifact_refuses_thin_partial_coverage():
+    artifact = build_grounded_research_artifact(
+        "vector memory deployment rollback",
+        [
+            {
+                "id": "src_1",
+                "name": "memory.md",
+                "scope": "project",
+                "snippet": "Vector memory retrieves related context.",
+                "match_terms": [
+                    "vector"
+                ]
+            }
+        ],
+        {
+            "total_sources": 1
+        }
+    )
+
+    assert artifact["coverage"]["grounded"] is True
+    assert artifact["coverage"]["enforced"] is False
+    assert "coverage is too thin" in artifact["grounded_answer"]
+    assert "deployment" in artifact["enforcement"]["unsupported_terms"]
 
 
 def test_grounded_research_artifact_builds_claim_graph():
