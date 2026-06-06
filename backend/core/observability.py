@@ -23,6 +23,41 @@ def _duration(
     ) else None
 
 
+def _percentile(
+    values,
+    percentile: float
+):
+    if not values:
+        return 0
+    ordered = sorted(
+        values
+    )
+    index = min(
+        len(
+            ordered
+        )
+        - 1,
+        max(
+            0,
+            round(
+                (
+                    len(
+                        ordered
+                    )
+                    - 1
+                )
+                * percentile
+            )
+        )
+    )
+    return round(
+        ordered[
+            index
+        ],
+        2
+    )
+
+
 def build_observability_report(
     limit: int = 100
 ) -> Dict:
@@ -85,6 +120,9 @@ def build_observability_report(
     duration_by_tool = defaultdict(
         list
     )
+    trace_groups = defaultdict(
+        list
+    )
 
     for event in completed:
         duration = _duration(
@@ -100,6 +138,28 @@ def build_observability_report(
             ].append(
                 duration
             )
+        trace_groups[
+            event.get(
+                "trace_id"
+            )
+            or (
+                event.get(
+                    "metadata"
+                )
+                or {}
+            ).get(
+                "trace_id"
+            )
+            or event.get(
+                "parent_id"
+            )
+            or event.get(
+                "id",
+                "unscoped"
+            )
+        ].append(
+            event
+        )
 
     slow_tools = sorted(
         [
@@ -184,6 +244,90 @@ def build_observability_report(
                 durations
             ) if durations else 0
         },
+        "latency_percentiles": {
+            "p50_ms": _percentile(
+                durations,
+                0.50
+            ),
+            "p95_ms": _percentile(
+                durations,
+                0.95
+            ),
+            "p99_ms": _percentile(
+                durations,
+                0.99
+            )
+        },
+        "traces": [
+            {
+                "trace_id": trace_id,
+                "events": len(
+                    trace_events
+                ),
+                "failed": sum(
+                    1
+                    for event in trace_events
+                    if event.get(
+                        "status"
+                    )
+                    in {
+                        "failed",
+                        "blocked"
+                    }
+                ),
+                "duration_ms": round(
+                    sum(
+                        _duration(
+                            event
+                        )
+                        or 0
+                        for event in trace_events
+                    ),
+                    2
+                ),
+                "attempts": max(
+                    [
+                        int(
+                            event.get(
+                                "attempt",
+                                1
+                            )
+                            or 1
+                        )
+                        for event in trace_events
+                    ]
+                    or [
+                        1
+                    ]
+                ),
+                "needs_attention": any(
+                    event.get(
+                        "status"
+                    )
+                    in {
+                        "failed",
+                        "blocked"
+                    }
+                    for event in trace_events
+                ),
+                "tools": sorted(
+                    {
+                        str(
+                            event.get(
+                                "tool",
+                                "unknown"
+                            )
+                        )
+                        for event in trace_events
+                    }
+                )
+            }
+            for trace_id, trace_events in list(
+                trace_groups.items()
+            )[
+                -20:
+            ]
+        ],
         "tool_counts": dict(
             tool_counts
         ),

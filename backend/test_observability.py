@@ -26,13 +26,16 @@ def test_observability_report_summarizes_tool_events(
         "Tool success: read_file",
         "success",
         tool="read_file",
-        duration_ms=10
+        duration_ms=10,
+        trace_id="trace-a"
     )
     execution_memory.record_execution_event(
         "Tool failed: run_command",
         "failed",
         tool="run_command",
-        duration_ms=40
+        duration_ms=40,
+        attempt=2,
+        trace_id="trace-a"
     )
 
     report = observability.build_observability_report()
@@ -41,3 +44,6 @@ def test_observability_report_summarizes_tool_events(
     assert report["rates"]["failure_rate"] == 0.5
     assert report["tool_counts"]["run_command"] == 1
     assert report["slow_tools"][0]["tool"] == "run_command"
+    assert report["traces"][0]["trace_id"] == "trace-a"
+    assert report["traces"][0]["attempts"] == 2
+    assert report["traces"][0]["needs_attention"] is True
